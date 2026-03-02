@@ -95,6 +95,13 @@ else:
 
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
+# ✅ Forzar schema por defecto en Postgres (evita "no schema selected")
+uri = (app.config.get("SQLALCHEMY_DATABASE_URI") or "").lower()
+if uri.startswith("postgresql://"):
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+        "connect_args": {"options": "-c search_path=caja"}
+    }
+    
 db = SQLAlchemy(app)
 
 
@@ -320,13 +327,13 @@ def seed_users():
         db.session.rollback()
 
 def init_db():
-    """
-    Init DB para Render (gunicorn) y local.
-    - create_all() sirve para SQLite y Postgres.
-    - ensure_columns_* SOLO se ejecuta en SQLite (PRAGMA).
-    - seed_users() es idempotente y tolera carreras.
-    """
     with app.app_context():
+        # Crear schema caja si no existe (para Postgres)
+        if not is_sqlite():
+            from sqlalchemy import text
+            db.session.execute(text("CREATE SCHEMA IF NOT EXISTS caja"))
+            db.session.commit()
+
         db.create_all()
         if is_sqlite():
             ensure_columns_shift()
