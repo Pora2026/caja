@@ -296,7 +296,7 @@ def _table_cols(table: str):
     # PRAGMA solo existe en SQLite
     if not is_sqlite():
         return []
-    with db.engine.connect() as conn:
+    with db.engine.begin() as conn:
         return [row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()]
 
 def is_sqlite():
@@ -305,7 +305,7 @@ def is_sqlite():
 
 def ensure_columns_shift():
     cols = _table_cols("shift")
-    with db.engine.connect() as conn:
+    with db.engine.begin() as conn:
         if "sales_pya" not in cols:
             conn.exec_driver_sql("ALTER TABLE shift ADD COLUMN sales_pya INTEGER DEFAULT 0")
         if "sales_rappi" not in cols:
@@ -333,7 +333,7 @@ def ensure_columns_user_mobile():
     # SQLite
     if is_sqlite():
         cols = _table_cols("user")
-        with db.engine.connect() as conn:
+        with db.engine.begin() as conn:
             if "mobile_pin_hash" not in cols:
                 conn.exec_driver_sql("ALTER TABLE user ADD COLUMN mobile_pin_hash TEXT")
             if "mobile_pin_fingerprint" not in cols:
@@ -345,19 +345,11 @@ def ensure_columns_user_mobile():
         return
 
     # Postgres (Render)
-    with db.engine.connect() as conn:
-        conn.exec_driver_sql(
-            'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_hash VARCHAR(255);'
-        )
-        conn.exec_driver_sql(
-            'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_fingerprint VARCHAR(64);'
-        )
-        conn.exec_driver_sql(
-            'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_attempts INTEGER DEFAULT 0;'
-        )
-        conn.exec_driver_sql(
-            'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_locked_until TIMESTAMP;'
-        )
+    with db.engine.begin() as conn:
+        conn.exec_driver_sql('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_hash VARCHAR(255);')
+        conn.exec_driver_sql('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_fingerprint VARCHAR(64);')
+        conn.exec_driver_sql('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_attempts INTEGER DEFAULT 0;')
+        conn.exec_driver_sql('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_locked_until TIMESTAMP;')
         conn.exec_driver_sql(
             'CREATE UNIQUE INDEX IF NOT EXISTS ux_user_mobile_pin_fingerprint '
             'ON "user"(mobile_pin_fingerprint) '
@@ -383,32 +375,6 @@ def _is_postgres():
     uri = (app.config.get("SQLALCHEMY_DATABASE_URI") or "").lower()
     return uri.startswith("postgresql://")
 
-def ensure_columns_user():
-    # Agrega columnas nuevas en User (SQLite y Postgres) sin romper si ya existen.
-    cols = _table_cols("user")
-    with db.engine.connect() as conn:
-        if is_sqlite():
-            if "mobile_pin_hash" not in cols:
-                conn.exec_driver_sql("ALTER TABLE user ADD COLUMN mobile_pin_hash TEXT")
-            if "mobile_pin_fingerprint" not in cols:
-                conn.exec_driver_sql("ALTER TABLE user ADD COLUMN mobile_pin_fingerprint TEXT")
-            if "mobile_pin_attempts" not in cols:
-                conn.exec_driver_sql("ALTER TABLE user ADD COLUMN mobile_pin_attempts INTEGER DEFAULT 0")
-            if "mobile_pin_locked_until" not in cols:
-                conn.exec_driver_sql("ALTER TABLE user ADD COLUMN mobile_pin_locked_until DATETIME")
-        elif _is_postgres():
-            # Postgres soporta IF NOT EXISTS
-            conn.exec_driver_sql('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_hash VARCHAR(255)')
-            conn.exec_driver_sql('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_fingerprint VARCHAR(64)')
-            conn.exec_driver_sql('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_attempts INTEGER DEFAULT 0')
-            conn.exec_driver_sql('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_locked_until TIMESTAMP')
-            # Unique constraint para fingerprint
-            conn.exec_driver_sql("""DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_user_mobile_pin_fingerprint') THEN
-    ALTER TABLE "user" ADD CONSTRAINT uq_user_mobile_pin_fingerprint UNIQUE (mobile_pin_fingerprint);
-  END IF;
-END $$;""")
 
 def seed_users():
     """
@@ -436,7 +402,6 @@ def init_db():
             db.session.commit()
 
         db.create_all()
-        ensure_columns_user()
         ensure_columns_user_mobile()
         if is_sqlite():
             ensure_columns_shift()
@@ -2630,18 +2595,23 @@ EDIT_ALL_HTML = """
       {% endif %}
     </table>
 
-    <h4 style="margin-top:12px;">Agregar egreso</h4>
-    <div class="row2">
-      <div>
-        <select name="new_category">
-          <option value="">(no agregar)</option>
-          {% for c in categories %}<option value="{{c}}">{{c}}</option>{% endfor %}
-        </select>
+    <h4 style="margin-top:12px;">Agregar egresos (hasta 5)</h4>
+    <p class="muted" style="margin-top:-6px;">Completá categoría y monto para cada egreso que quieras agregar.</p>
+    <div class="grid">
+      {% for i in range(1,6) %}
+      <div class="row2" style="align-items:center;">
+        <div>
+          <select name="new_category_{{i}}">
+            <option value="">(no agregar)</option>
+            {% for c in categories %}<option value="{{c}}">{{c}}</option>{% endfor %}
+          </select>
+        </div>
+        <div style="display:flex; gap:10px; align-items:center; width:100%;">
+          <input type="number" name="new_amount_{{i}}" min="0" placeholder="$" style="width:140px;">
+          <input type="text" name="new_note_{{i}}" placeholder="nota (obligatoria si Otros)" style="flex:1;">
+        </div>
       </div>
-      <div style="display:flex; gap:10px; align-items:center;">
-        <input type="number" name="new_amount" min="0" style="width:140px;">
-        <input type="text" name="new_note" placeholder="nota (obligatoria si Otros)" style="flex:1;">
-      </div>
+      {% endfor %}
     </div>
   </div>
 
@@ -2988,17 +2958,25 @@ def edit_all(id):
             e.amount = int(amt)
             e.note = note or None
 
-        new_cat = (request.form.get("new_category") or "").strip()
-        new_amt = safe_int(request.form.get("new_amount"))
-        new_note = (request.form.get("new_note") or "").strip()
-        if new_cat:
+        # Agregar múltiples egresos nuevos (hasta 5)
+        for i in range(1, 6):
+            new_cat = (request.form.get(f"new_category_{i}") or "").strip()
+            new_amt = safe_int(request.form.get(f"new_amount_{i}"))
+            new_note = (request.form.get(f"new_note_{i}") or "").strip()
+            if not new_cat:
+                continue
             if new_cat not in CATEGORIES:
                 return redirect(url_for("edit_all", id=id, d=d))
             if new_amt is None or new_amt <= 0:
                 return redirect(url_for("edit_all", id=id, d=d))
             if new_cat.startswith("Otros") and not new_note:
                 return redirect(url_for("edit_all", id=id, d=d))
-            db.session.add(CashExpense(shift_id=id, category=new_cat, amount=int(new_amt), note=new_note or None))
+            db.session.add(CashExpense(
+                shift_id=id,
+                category=new_cat,
+                amount=int(new_amt),
+                note=new_note or None
+            ))
 
         db.session.flush()
 
