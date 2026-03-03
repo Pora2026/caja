@@ -328,6 +328,41 @@ def ensure_columns_shift_close():
             conn.exec_driver_sql("ALTER TABLE shift_close ADD COLUMN edit_count INTEGER DEFAULT 0")
         if "ending_calc" not in cols:
             conn.exec_driver_sql("ALTER TABLE shift_close ADD COLUMN ending_calc INTEGER DEFAULT 0")
+            
+def ensure_columns_user_mobile():
+    # SQLite
+    if is_sqlite():
+        cols = _table_cols("user")
+        with db.engine.connect() as conn:
+            if "mobile_pin_hash" not in cols:
+                conn.exec_driver_sql("ALTER TABLE user ADD COLUMN mobile_pin_hash TEXT")
+            if "mobile_pin_fingerprint" not in cols:
+                conn.exec_driver_sql("ALTER TABLE user ADD COLUMN mobile_pin_fingerprint TEXT")
+            if "mobile_pin_attempts" not in cols:
+                conn.exec_driver_sql("ALTER TABLE user ADD COLUMN mobile_pin_attempts INTEGER DEFAULT 0")
+            if "mobile_pin_locked_until" not in cols:
+                conn.exec_driver_sql("ALTER TABLE user ADD COLUMN mobile_pin_locked_until DATETIME")
+        return
+
+    # Postgres (Render)
+    with db.engine.connect() as conn:
+        conn.exec_driver_sql(
+            'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_hash VARCHAR(255);'
+        )
+        conn.exec_driver_sql(
+            'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_fingerprint VARCHAR(64);'
+        )
+        conn.exec_driver_sql(
+            'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_attempts INTEGER DEFAULT 0;'
+        )
+        conn.exec_driver_sql(
+            'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_locked_until TIMESTAMP;'
+        )
+        conn.exec_driver_sql(
+            'CREATE UNIQUE INDEX IF NOT EXISTS ux_user_mobile_pin_fingerprint '
+            'ON "user"(mobile_pin_fingerprint) '
+            'WHERE mobile_pin_fingerprint IS NOT NULL;'
+        )
 
 def ensure_columns_attendance():
     cols = _table_cols("attendance")
@@ -402,6 +437,7 @@ def init_db():
 
         db.create_all()
         ensure_columns_user()
+        ensure_columns_user_mobile()
         if is_sqlite():
             ensure_columns_shift()
             ensure_columns_shift_close()
