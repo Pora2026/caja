@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 from dotenv import load_dotenv
 load_dotenv()  # lee .env local si existe
 from functools import wraps
@@ -17,8 +18,6 @@ from sqlalchemy.exc import IntegrityError
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from openpyxl import load_workbook, Workbook
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.pdfgen import canvas
 
 # ==============================
 # FIX STATIC + APP + DB
@@ -1288,8 +1287,9 @@ CAJA_INDEX_HTML = """
   </div>
   <div class="row">
     <a class="btn" href="{{ url_for('export_excel') }}">Exportar Excel</a>
-    <a class="btn" href="{{ url_for('export_pdf') }}">Exportar PDF</a>
+    <a class="btn" href="{{ url_for('export_caja_json') }}">Exportar JSON</a>
     <a class="btn" href="{{ url_for('import_caja') }}">Importar Excel</a>
+    <a class="btn" href="{{ url_for('import_caja_json') }}">Importar JSON</a>
   </div>
 </div>
 
@@ -2215,61 +2215,83 @@ def export_excel():
     filename = f"cierres_caja_{date.today().isoformat()}.xlsx"
     return send_file(bio, as_attachment=True, download_name=filename,
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-@app.route("/caja/export/pdf")
+                     
+@app.route("/caja/export/json")
 @login_required
-def export_pdf():
-    data = get_caja_summary(limit=2000)
+def export_caja_json():
+    # Backup JSON de Caja: shifts + expenses + close
+    start_date, end_date = parse_range_params(request.args.get("start"), request.args.get("end"))
+
+    shifts = Shift.query.order_by(Shift.day.asc(), Shift.turn.asc()).all()
+    expenses = CashExpense.query.order_by(CashExpense.created_at.asc()).all()
+    closes = ShiftClose.query.order_by(ShiftClose.created_at.asc()).all()
+
+    # si mandan start/end por query, filtramos (por day del shift)
+    if start_date and end_date:
+        shift_ids_in_range = [
+            s.id for s in shifts
+            if (s.day >= start_date and s.day <= end_date)
+        ]
+        shifts = [s for s in shifts if s.id in shift_ids_in_range]
+        expenses = [e for e in expenses if e.shift_id in shift_ids_in_range]
+        closes = [c for c in closes if c.shift_id in shift_ids_in_range]
+
+    payload = {
+        "type": "caja_backup",
+        "version": 1,
+        "exported_at": datetime.utcnow().isoformat(),
+        "range": {"start": start_date.isoformat(), "end": end_date.isoformat()},
+        "shifts": [
+            {
+                "day": s.day.isoformat(),
+                "turn": s.turn,
+                "responsible": s.responsible,
+                "opening_cash": int(s.opening_cash or 0),
+                "sales_cash": int(s.sales_cash or 0),
+                "sales_mp": int(s.sales_mp or 0),
+                "sales_pya": int(getattr(s, "sales_pya", 0) or 0),
+                "sales_rappi": int(getattr(s, "sales_rappi", 0) or 0),
+                "status": s.status,
+                "closed_at": s.closed_at.isoformat() if s.closed_at else None,
+            }
+            for s in shifts
+        ],
+        "expenses": [
+            {
+                "shift_day": Shift.query.get(e.shift_id).day.isoformat() if Shift.query.get(e.shift_id) else None,
+                "shift_turn": Shift.query.get(e.shift_id).turn if Shift.query.get(e.shift_id) else None,
+                "category": e.category,
+                "amount": int(e.amount or 0),
+                "note": e.note,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+            }
+            for e in expenses
+        ],
+        "closes": [
+            {
+                "shift_day": Shift.query.get(c.shift_id).day.isoformat() if Shift.query.get(c.shift_id) else None,
+                "shift_turn": Shift.query.get(c.shift_id).turn if Shift.query.get(c.shift_id) else None,
+                "withdrawn_cash": int(c.withdrawn_cash or 0),
+                "ending_calc": int(c.ending_calc or 0),
+                "ending_cash": int(c.ending_cash or 0),
+                "difference": int(c.difference or 0),
+                "note": c.note,
+                "close_ok": int(c.close_ok or 1),
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+                "edited_by": c.edited_by,
+                "edited_at": c.edited_at.isoformat() if c.edited_at else None,
+                "edit_reason": c.edit_reason,
+                "edit_count": int(c.edit_count or 0),
+            }
+            for c in closes
+        ],
+    }
+
     bio = BytesIO()
-    c = canvas.Canvas(bio, pagesize=landscape(A4))
-    width, height = landscape(A4)
-
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(30, height - 30, "PORA - Resumen de cierres de caja")
-    c.setFont("Helvetica", 9)
-
-    y = height - 55
-    headers = ["Fecha","Turno","Resp","CI","Efe","MP","PYa","Rappi","Egr","Bruto","Neto","Ret","Final","Diff"]
-    col_widths = [70, 60, 80, 55, 55, 60, 55, 55, 55, 55, 55, 55, 60, 55]
-    x0 = 16
-
-    def draw_row(values, y_):
-        x = x0
-        for v, w in zip(values, col_widths):
-            c.drawString(x, y_, str(v))
-            x += w
-
-    c.setFont("Helvetica-Bold", 9)
-    draw_row(headers, y)
-    c.line(16, y - 3, width - 16, y - 3)
-    y -= 16
-
-    c.setFont("Helvetica", 9)
-    for r in data:
-        if y < 40:
-            c.showPage()
-            c.setFont("Helvetica-Bold", 14)
-            c.drawString(30, height - 30, "PORA - Resumen de cierres de caja (cont.)")
-            c.setFont("Helvetica", 9)
-            y = height - 55
-            c.setFont("Helvetica-Bold", 9)
-            draw_row(headers, y)
-            c.line(16, y - 3, width - 16, y - 3)
-            y -= 16
-            c.setFont("Helvetica", 9)
-
-        draw_row([
-            r["day"], r["turn_name"], (r["responsible"] or "")[:10],
-            r["opening_cash"], r["sales_cash"], r["sales_mp"], r["sales_pya"], r["sales_rappi"],
-            r["expenses"], r["ventas_bruto"], r["ventas_neto"],
-            r["withdrawn"], r["ending_real"], r["difference"]
-        ], y)
-        y -= 14
-
-    c.save()
+    bio.write(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
     bio.seek(0)
-    filename = f"cierres_caja_{date.today().isoformat()}.pdf"
-    return send_file(bio, as_attachment=True, download_name=filename, mimetype="application/pdf")
+    filename = f"caja_backup_{date.today().isoformat()}.json"
+    return send_file(bio, as_attachment=True, download_name=filename, mimetype="application/json")
 
 # ==============================
 # IMPORT CAJA (Opción A)
@@ -2461,6 +2483,201 @@ def import_caja():
                 err = str(ex)
 
     return render_template_string(IMPORT_CAJA_HTML, base_css=BASE_CSS, err=err, msg=msg)
+
+IMPORT_CAJA_JSON_HTML = """
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><title>Import Caja (JSON)</title>{{ base_css|safe }}</head>
+<body style="max-width:950px;">
+  <a href="{{ url_for('caja_index') }}">← Volver</a>
+  <h2>Importar Backup JSON - Caja</h2>
+
+  <div class="box" style="margin-bottom:12px;">
+    <b>Formato:</b> archivo JSON exportado por “Exportar JSON”.<br>
+    <b>Modo skip:</b> si el turno (día+turno) ya existe, no lo toca.<br>
+    <b>Modo replace:</b> borra ese turno (incluye egresos + cierre) y lo recrea.
+  </div>
+
+  {% if msg %}<div class="box" style="border-color:#7ad2a4;background:#dff5e6;"><b>{{msg}}</b></div>{% endif %}
+  {% if err %}<div class="box" style="border-color:#ffb866;background:#ffe6d6;"><b>Error:</b> {{err}}</div>{% endif %}
+
+  <form method="post" enctype="multipart/form-data" style="margin-top:12px;">
+    <div class="box">
+      <label><b>Archivo JSON</b></label><br>
+      <input type="file" name="file" accept=".json" required>
+      <br><br>
+      <label><b>Modo</b></label><br>
+      <select name="mode">
+        <option value="skip" selected>Si existe el turno, NO tocarlo (skip)</option>
+        <option value="replace">Si existe el turno, REEMPLAZAR (replace)</option>
+      </select>
+    </div>
+    <br>
+    <button class="btn">Importar JSON</button>
+  </form>
+</body>
+</html>
+"""
+
+@app.route("/import/caja/json", methods=["GET","POST"])
+@login_required
+def import_caja_json():
+    err = None
+    msg = None
+
+    if request.method == "POST":
+        mode = (request.form.get("mode") or "skip").strip()
+        f = request.files.get("file")
+        if not f:
+            err = "No se recibió archivo."
+        else:
+            try:
+                payload = json.load(f)
+
+                if not isinstance(payload, dict) or payload.get("type") != "caja_backup":
+                    raise ValueError("JSON inválido: no parece un backup de Caja.")
+
+                shifts = payload.get("shifts") or []
+                expenses = payload.get("expenses") or []
+                closes = payload.get("closes") or []
+
+                # index de expenses/closes por (day, turn)
+                exp_map = {}
+                for e in expenses:
+                    dd = (e.get("shift_day") or "").strip()
+                    tt = (e.get("shift_turn") or "").strip().upper()
+                    if not dd or tt not in ("MORNING","AFTERNOON"):
+                        continue
+                    exp_map.setdefault((dd, tt), []).append(e)
+
+                close_map = {}
+                for c in closes:
+                    dd = (c.get("shift_day") or "").strip()
+                    tt = (c.get("shift_turn") or "").strip().upper()
+                    if not dd or tt not in ("MORNING","AFTERNOON"):
+                        continue
+                    close_map[(dd, tt)] = c
+
+                imported = 0
+                replaced = 0
+                skipped = 0
+
+                for s in shifts:
+                    dd = (s.get("day") or "").strip()
+                    tt = (s.get("turn") or "").strip().upper()
+                    if not dd or tt not in ("MORNING","AFTERNOON"):
+                        continue
+
+                    day_obj = date.fromisoformat(dd)
+                    responsible = (s.get("responsible") or "Bernardo").strip()
+                    opening_cash = int(s.get("opening_cash") or 0)
+                    sales_cash = int(s.get("sales_cash") or 0)
+                    sales_mp = int(s.get("sales_mp") or 0)
+                    sales_pya = int(s.get("sales_pya") or 0)
+                    sales_rappi = int(s.get("sales_rappi") or 0)
+
+                    existing = Shift.query.filter_by(day=day_obj, turn=tt).first()
+                    if existing:
+                        if mode == "skip":
+                            skipped += 1
+                            continue
+
+                        # replace: borrar cierre + egresos + shift
+                        c_old = ShiftClose.query.filter_by(shift_id=existing.id).first()
+                        if c_old:
+                            db.session.delete(c_old)
+                        CashExpense.query.filter_by(shift_id=existing.id).delete()
+                        db.session.delete(existing)
+                        db.session.flush()
+                        replaced += 1
+
+                    # crear shift
+                    shift_status = (s.get("status") or "CLOSED").strip().upper()
+                    if shift_status not in ("OPEN","CLOSED"):
+                        shift_status = "CLOSED"
+
+                    new_shift = Shift(
+                        day=day_obj,
+                        turn=tt,
+                        responsible=responsible,
+                        opening_cash=opening_cash,
+                        sales_cash=sales_cash,
+                        sales_mp=sales_mp,
+                        sales_pya=sales_pya,
+                        sales_rappi=sales_rappi,
+                        status=shift_status,
+                        closed_at=datetime.utcnow() if shift_status == "CLOSED" else None
+                    )
+                    db.session.add(new_shift)
+                    db.session.flush()
+
+                    # egresos
+                    for e in exp_map.get((dd, tt), []):
+                        cat = (e.get("category") or "").strip() or "Mantenimiento / Varios"
+                        amt = int(e.get("amount") or 0)
+                        note = (e.get("note") or None)
+
+                        if cat not in CATEGORIES:
+                            cat = "Mantenimiento / Varios"
+                        if cat.startswith("Otros") and not note:
+                            note = "import json"
+
+                        if amt > 0:
+                            db.session.add(CashExpense(
+                                shift_id=new_shift.id,
+                                category=cat,
+                                amount=amt,
+                                note=note
+                            ))
+
+                    # cierre (si existe en JSON). Si no, lo calculamos.
+                    cdata = close_map.get((dd, tt))
+                    if shift_status == "CLOSED":
+                        if cdata:
+                            withdrawn = int(cdata.get("withdrawn_cash") or 0)
+                            ending_calc = int(cdata.get("ending_calc") or calc_ending_calc(sales_cash, withdrawn))
+                            ending_real = int(cdata.get("ending_cash") or ending_calc)
+                            diff = int(cdata.get("difference") or (ending_real - ending_calc))
+                            close_ok = int(cdata.get("close_ok") or 1)
+                            note = cdata.get("note") or None
+
+                            db.session.add(ShiftClose(
+                                shift_id=new_shift.id,
+                                withdrawn_cash=withdrawn,
+                                ending_calc=ending_calc,
+                                ending_cash=ending_real,
+                                difference=diff,
+                                note=note,
+                                close_ok=close_ok,
+                                edit_count=int(cdata.get("edit_count") or 0),
+                                edited_by=cdata.get("edited_by"),
+                                edited_at=datetime.fromisoformat(cdata["edited_at"]) if cdata.get("edited_at") else None,
+                                edit_reason=cdata.get("edit_reason"),
+                            ))
+                        else:
+                            withdrawn = max(0, int(sales_cash) - int(opening_cash))
+                            ending_calc = calc_ending_calc(sales_cash, withdrawn)
+                            ending_real = ending_calc
+                            db.session.add(ShiftClose(
+                                shift_id=new_shift.id,
+                                withdrawn_cash=withdrawn,
+                                ending_calc=ending_calc,
+                                ending_cash=ending_real,
+                                difference=0,
+                                note=None,
+                                close_ok=1,
+                                edit_count=0
+                            ))
+
+                    imported += 1
+
+                db.session.commit()
+                msg = f"Import JSON OK. Importados: {imported}. Reemplazados: {replaced}. Omitidos (skip): {skipped}."
+            except Exception as ex:
+                db.session.rollback()
+                err = str(ex)
+
+    return render_template_string(IMPORT_CAJA_JSON_HTML, base_css=BASE_CSS, err=err, msg=msg)
 
 # ============================================================
 # =====================  ASISTENCIA (UI)  =====================
@@ -2668,12 +2885,15 @@ ASISTENCIA_HTML = """
     <h2 style="margin:0;">Asistencia</h2>
     <div class="muted"><a href="{{ url_for('home') }}">← Volver al menú</a></div>
   </div>
-  <div class="row">
-    <a class="btn" href="{{ url_for('att_export_excel', emp=emp, start=start, end=end, novf=novf) }}">Exportar Excel</a>
-    <a class="btn" href="{{ url_for('att_export_pdf', emp=emp, start=start, end=end, novf=novf) }}">Exportar PDF</a>
-    <a class="btn" href="{{ url_for('import_asistencia') }}">Importar Excel</a>
-    <a class="btn" href="{{ url_for('att_config') }}">Configurar grupos / vacaciones</a>
-  </div>
+    <div class="row">
+      <a class="btn" href="{{ url_for('att_export_excel', emp=emp, start=start, end=end, novf=novf) }}">Exportar Excel</a>
+      <a class="btn" href="{{ url_for('att_export_json', emp=emp, start=start, end=end, novf=novf) }}">Exportar JSON</a>
+
+      <a class="btn" href="{{ url_for('import_asistencia') }}">Importar Excel</a>
+      <a class="btn" href="{{ url_for('import_asistencia_json') }}">Importar JSON</a>
+
+      <a class="btn" href="{{ url_for('att_config') }}">Configurar grupos / vacaciones</a>
+    </div>
 </div>
 
 <div class="box" style="margin-top:10px;">
@@ -3318,68 +3538,76 @@ def att_export_excel():
     return send_file(bio, as_attachment=True, download_name=filename,
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-@app.route("/asistencia/export/pdf")
+@app.route("/asistencia/export/json")
 @login_required
-def att_export_pdf():
+def att_export_json():
     emp = request.args.get("emp") or "ALL"
     novf = request.args.get("novf") or "ALL"
     start_date, end_date = parse_range_params(request.args.get("start"), request.args.get("end"))
+
+    # Export del resumen filtrado (attendance + consumptions)
     data = attendance_summary_rows(start_date, end_date, emp, novf)
 
-    bio = BytesIO()
-    c = canvas.Canvas(bio, pagesize=landscape(A4))
-    width, height = landscape(A4)
+    # Además exportamos los registros completos (attendance + consumptions)
+    q = Attendance.query.filter(Attendance.day >= start_date, Attendance.day <= end_date)
+    if emp != "ALL":
+        q = q.filter(Attendance.employee == emp)
 
-    title = f"Asistencia ({'Todos' if emp=='ALL' else emp}) {start_date.isoformat()} a {end_date.isoformat()}"
-    if novf != "ALL":
-        title += f" | {novf}"
-
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(30, height - 30, title)
-
-    headers = ["Fecha","Empleado","Grupo","Mañana","Tarde","Pagas","Novedad","Consumos","Notas"]
-    colw = [70, 90, 45, 95, 95, 55, 110, 80, 260]
-    x0 = 30
-    y = height - 55
-
-    def draw_row(vals, y_):
-        x = x0
-        for v, w in zip(vals, colw):
-            s = str(v) if v is not None else ""
-            if len(s) > 55 and w >= 200:
-                s = s[:55] + "..."
-            c.drawString(x, y_, s)
-            x += w
-
-    c.setFont("Helvetica-Bold", 9)
-    draw_row(headers, y)
-    c.line(30, y - 3, width - 30, y - 3)
-    y -= 16
-
-    c.setFont("Helvetica", 9)
-    for r in data:
-        if y < 40:
-            c.showPage()
-            c.setFont("Helvetica-Bold", 14)
-            c.drawString(30, height - 30, title + " (cont.)")
-            y = height - 55
-            c.setFont("Helvetica-Bold", 9)
-            draw_row(headers, y)
-            c.line(30, y - 3, width - 30, y - 3)
-            y -= 16
-            c.setFont("Helvetica", 9)
-
-        cons_txt = f"{r['cons_total']}"
-        draw_row(
-            [r["day"], r["employee"], r["group"], r["morning"], r["afternoon"], r["payable"], r["novelty"], cons_txt, r["notes"]],
-            y
+    attendances = []
+    for a in q.order_by(Attendance.day.asc(), Attendance.employee.asc()).all():
+        cons = (
+            AttendanceConsumption.query
+            .filter_by(attendance_id=a.id)
+            .order_by(AttendanceConsumption.idx.asc())
+            .all()
         )
-        y -= 14
+        attendances.append({
+            "day": a.day.isoformat(),
+            "employee": a.employee,
+            "group_code": a.group_code,
+            "mode": a.mode,
+            "morning_in": a.morning_in,
+            "morning_out": a.morning_out,
+            "afternoon_in": a.afternoon_in,
+            "afternoon_out": a.afternoon_out,
+            "novelty": a.novelty,
+            "novelty_minutes": int(a.novelty_minutes or 0),
+            "notes": a.notes,
+            "consumptions": [
+                {"idx": int(c.idx), "item": c.item, "amount": int(c.amount or 0)}
+                for c in cons
+            ]
+        })
 
-    c.save()
+    payload = {
+        "type": "asistencia_backup",
+        "version": 1,
+        "exported_at": datetime.utcnow().isoformat(),
+        "range": {"start": start_date.isoformat(), "end": end_date.isoformat()},
+        "filters": {"emp": emp, "novf": novf},
+        "attendances": attendances,
+        "summary": data,
+        # opcional (backup extra): config y calendarios
+        "rotation_config": (
+            {"week0_map": rotation_config_get().week0_map, "created_by": rotation_config_get().created_by,
+             "created_at": rotation_config_get().created_at.isoformat()}
+            if rotation_config_get() else None
+        ),
+        "vacations": [
+            {"employee": v.employee, "start_day": v.start_day.isoformat(), "end_day": v.end_day.isoformat()}
+            for v in Vacation.query.order_by(Vacation.employee.asc(), Vacation.start_day.asc()).all()
+        ],
+        "calendar_days": [
+            {"day": cd.day.isoformat(), "holiday_type": cd.holiday_type or ""}
+            for cd in CalendarDay.query.order_by(CalendarDay.day.asc()).all()
+        ]
+    }
+
+    bio = BytesIO()
+    bio.write(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
     bio.seek(0)
-    filename = f"asistencia_{start_date.isoformat()}_{end_date.isoformat()}.pdf"
-    return send_file(bio, as_attachment=True, download_name=filename, mimetype="application/pdf")
+    filename = f"asistencia_backup_{start_date.isoformat()}_{end_date.isoformat()}.json"
+    return send_file(bio, as_attachment=True, download_name=filename, mimetype="application/json")
 
 # ==============================
 # IMPORT ASISTENCIA
@@ -3533,6 +3761,162 @@ def import_asistencia():
                 err = str(ex)
 
     return render_template_string(IMPORT_ATT_HTML, base_css=BASE_CSS, err=err, msg=msg)
+
+IMPORT_ATT_JSON_HTML = """
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><title>Import Asistencia (JSON)</title>{{ base_css|safe }}</head>
+<body style="max-width:950px;">
+  <a href="{{ url_for('asistencia') }}">← Volver</a>
+  <h2>Importar Backup JSON - Asistencia</h2>
+
+  <div class="box" style="margin-bottom:12px;">
+    <b>Formato:</b> archivo JSON exportado por “Exportar JSON”.<br>
+    <b>Modo skip:</b> si existe (día+empleado), no lo toca.<br>
+    <b>Modo replace:</b> reemplaza (día+empleado) y recrea consumos.<br>
+    <span class="muted">Además: si el JSON trae vacaciones / feriados / rotación, se “mergea” (upsert simple).</span>
+  </div>
+
+  {% if msg %}<div class="box" style="border-color:#7ad2a4;background:#dff5e6;"><b>{{msg}}</b></div>{% endif %}
+  {% if err %}<div class="box" style="border-color:#ffb866;background:#ffe6d6;"><b>Error:</b> {{err}}</div>{% endif %}
+
+  <form method="post" enctype="multipart/form-data" style="margin-top:12px;">
+    <div class="box">
+      <label><b>Archivo JSON</b></label><br>
+      <input type="file" name="file" accept=".json" required>
+      <br><br>
+      <label><b>Modo</b></label><br>
+      <select name="mode">
+        <option value="skip" selected>Si existe el día/empleado, NO tocar (skip)</option>
+        <option value="replace">Si existe el día/empleado, REEMPLAZAR (replace)</option>
+      </select>
+    </div>
+    <br>
+    <button class="btn">Importar JSON</button>
+  </form>
+</body>
+</html>
+"""
+
+@app.route("/import/asistencia/json", methods=["GET","POST"])
+@login_required
+def import_asistencia_json():
+    err = None
+    msg = None
+
+    if request.method == "POST":
+        mode = (request.form.get("mode") or "skip").strip()
+        f = request.files.get("file")
+        if not f:
+            err = "No se recibió archivo."
+        else:
+            try:
+                payload = json.load(f)
+                if not isinstance(payload, dict) or payload.get("type") != "asistencia_backup":
+                    raise ValueError("JSON inválido: no parece un backup de Asistencia.")
+
+                attendances = payload.get("attendances") or []
+
+                imported = 0
+                replaced = 0
+                skipped = 0
+
+                for a in attendances:
+                    dd = (a.get("day") or "").strip()
+                    emp = (a.get("employee") or "").strip()
+                    if not dd or emp not in EMPLOYEES:
+                        continue
+
+                    day_obj = date.fromisoformat(dd)
+
+                    existing = Attendance.query.filter_by(day=day_obj, employee=emp).first()
+                    if existing:
+                        if mode == "skip":
+                            skipped += 1
+                            continue
+                        AttendanceConsumption.query.filter_by(attendance_id=existing.id).delete()
+                        db.session.delete(existing)
+                        db.session.flush()
+                        replaced += 1
+
+                    grp = (a.get("group_code") or "A").strip().upper()
+                    if grp not in ("A","B"):
+                        grp = "A"
+
+                    nov = (a.get("novelty") or "").strip()
+                    if nov and nov not in NOVELTY_ITEMS:
+                        nov = ""
+
+                    row = Attendance(
+                        day=day_obj,
+                        employee=emp,
+                        group_code=grp,
+                        mode=(a.get("mode") or "MANUAL"),
+                        morning_in=a.get("morning_in"),
+                        morning_out=a.get("morning_out"),
+                        afternoon_in=a.get("afternoon_in"),
+                        afternoon_out=a.get("afternoon_out"),
+                        novelty=nov or None,
+                        novelty_minutes=int(a.get("novelty_minutes") or 0),
+                        notes=(a.get("notes") or None),
+                    )
+                    db.session.add(row)
+                    db.session.flush()
+
+                    cons = a.get("consumptions") or []
+                    for c in cons:
+                        idx = int(c.get("idx") or 0)
+                        if idx <= 0:
+                            continue
+                        db.session.add(AttendanceConsumption(
+                            attendance_id=row.id,
+                            idx=idx,
+                            item=(c.get("item") or None),
+                            amount=int(c.get("amount") or 0)
+                        ))
+
+                    imported += 1
+
+                # merge extras (no pisa todo, solo upsert simple)
+                rc = payload.get("rotation_config")
+                if rc and isinstance(rc, dict) and rc.get("week0_map"):
+                    # guardamos como nueva config (la más nueva manda)
+                    db.session.add(RotationConfig(
+                        week0_map=str(rc.get("week0_map")),
+                        created_by=(rc.get("created_by") or "import-json")
+                    ))
+
+                vacs = payload.get("vacations") or []
+                for v in vacs:
+                    emp = (v.get("employee") or "").strip()
+                    sd = (v.get("start_day") or "").strip()
+                    ed = (v.get("end_day") or "").strip()
+                    if emp not in EMPLOYEES or not sd or not ed:
+                        continue
+                    sd2 = date.fromisoformat(sd)
+                    ed2 = date.fromisoformat(ed)
+                    exists = Vacation.query.filter_by(employee=emp, start_day=sd2, end_day=ed2).first()
+                    if not exists:
+                        db.session.add(Vacation(employee=emp, start_day=sd2, end_day=ed2))
+
+                cds = payload.get("calendar_days") or []
+                for cd in cds:
+                    dd = (cd.get("day") or "").strip()
+                    if not dd:
+                        continue
+                    d2 = date.fromisoformat(dd)
+                    ht = (cd.get("holiday_type") or "").strip().upper()
+                    if ht not in ("", "LABORABLE", "NO_LABORABLE"):
+                        ht = ""
+                    set_holiday_type(d2, ht)
+
+                db.session.commit()
+                msg = f"Import JSON OK. Registros: {imported}. Reemplazados: {replaced}. Omitidos (skip): {skipped}."
+            except Exception as ex:
+                db.session.rollback()
+                err = str(ex)
+
+    return render_template_string(IMPORT_ATT_JSON_HTML, base_css=BASE_CSS, err=err, msg=msg)
 
 # ==============================
 # MAIN
