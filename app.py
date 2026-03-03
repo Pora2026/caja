@@ -17,6 +17,8 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.exc import IntegrityError
 from werkzeug.security import generate_password_hash, check_password_hash
 
+import hashlib
+
 from openpyxl import load_workbook, Workbook
 
 # ==============================
@@ -110,6 +112,14 @@ db = SQLAlchemy(app)
 TURNS = [("MORNING", "Mañana"), ("AFTERNOON", "Tarde")]
 TURN_NAMES = dict(TURNS)
 
+WEEKDAYS_ES = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"]
+
+def weekday_es(d: date) -> str:
+    try:
+        return WEEKDAYS_ES[d.weekday()]
+    except Exception:
+        return ""
+
 CATEGORIES = [
     "Insumos urgentes",
     "Delivery / Cadete (efectivo)",
@@ -164,6 +174,14 @@ class User(db.Model):
     password_hash = db.Column(db.String(255), nullable=True)
     role = db.Column(db.String(10), default="user")  # admin / user
     is_active = db.Column(db.Integer, default=1)
+
+    # ===== Mobile PIN (PORÁ Mobile) =====
+    # Guardamos hash (para validar) + fingerprint determinístico (para buscar y garantizar unicidad).
+    mobile_pin_hash = db.Column(db.String(255), nullable=True)
+    mobile_pin_fingerprint = db.Column(db.String(64), unique=True, nullable=True)
+    mobile_pin_attempts = db.Column(db.Integer, default=0)
+    mobile_pin_locked_until = db.Column(db.DateTime, nullable=True)
+
 
 class Shift(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -254,6 +272,23 @@ class CalendarDay(db.Model):
     day = db.Column(db.Date, unique=True, nullable=False)
     holiday_type = db.Column(db.String(20))  # "", "LABORABLE", "NO_LABORABLE"
 
+
+class AdvanceRequest(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+
+    amount_requested = db.Column(db.Integer, nullable=False)
+    requested_for_date = db.Column(db.Date, nullable=False)
+    reason = db.Column(db.String(300))
+
+    status = db.Column(db.String(12), default="PENDING")  # PENDING / APPROVED / REJECTED
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    decided_at = db.Column(db.DateTime)
+    decided_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"))
+    admin_comment = db.Column(db.String(300))
+
+
 # ==============================
 # MIGRACIONES / SEED
 # ==============================
@@ -308,6 +343,38 @@ def ensure_columns_attendance():
         if "notes" not in cols:
             conn.exec_driver_sql("ALTER TABLE attendance ADD COLUMN notes TEXT")
 
+
+def _is_postgres():
+    uri = (app.config.get("SQLALCHEMY_DATABASE_URI") or "").lower()
+    return uri.startswith("postgresql://")
+
+def ensure_columns_user():
+    # Agrega columnas nuevas en User (SQLite y Postgres) sin romper si ya existen.
+    cols = _table_cols("user")
+    with db.engine.connect() as conn:
+        if is_sqlite():
+            if "mobile_pin_hash" not in cols:
+                conn.exec_driver_sql("ALTER TABLE user ADD COLUMN mobile_pin_hash TEXT")
+            if "mobile_pin_fingerprint" not in cols:
+                conn.exec_driver_sql("ALTER TABLE user ADD COLUMN mobile_pin_fingerprint TEXT")
+            if "mobile_pin_attempts" not in cols:
+                conn.exec_driver_sql("ALTER TABLE user ADD COLUMN mobile_pin_attempts INTEGER DEFAULT 0")
+            if "mobile_pin_locked_until" not in cols:
+                conn.exec_driver_sql("ALTER TABLE user ADD COLUMN mobile_pin_locked_until DATETIME")
+        elif _is_postgres():
+            # Postgres soporta IF NOT EXISTS
+            conn.exec_driver_sql('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_hash VARCHAR(255)')
+            conn.exec_driver_sql('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_fingerprint VARCHAR(64)')
+            conn.exec_driver_sql('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_attempts INTEGER DEFAULT 0')
+            conn.exec_driver_sql('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS mobile_pin_locked_until TIMESTAMP')
+            # Unique constraint para fingerprint
+            conn.exec_driver_sql("""DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_user_mobile_pin_fingerprint') THEN
+    ALTER TABLE "user" ADD CONSTRAINT uq_user_mobile_pin_fingerprint UNIQUE (mobile_pin_fingerprint);
+  END IF;
+END $$;""")
+
 def seed_users():
     """
     Seed idempotente (no rompe si corre más de una vez).
@@ -334,6 +401,7 @@ def init_db():
             db.session.commit()
 
         db.create_all()
+        ensure_columns_user()
         if is_sqlite():
             ensure_columns_shift()
             ensure_columns_shift_close()
@@ -349,6 +417,37 @@ init_db()
 def current_user():
     uid = session.get("user_id")
     return User.query.get(uid) if uid else None
+
+
+def sync_advance_to_attendance(ar) -> None:
+    """Al aprobar un adelanto, lo refleja como consumo en Asistencia (como se carga manualmente).
+    - Día: requested_for_date
+    - Empleado: username del solicitante
+    - Item: 'adelanto'
+    - Amount: amount_requested
+    """
+    emp = (User.query.get(ar.user_id).username or "").strip()
+    if not emp:
+        return
+    day_obj = ar.requested_for_date
+    # Asegurar fila de asistencia
+    row = Attendance.query.filter_by(day=day_obj, employee=emp).first()
+    if not row:
+        row = Attendance(day=day_obj, employee=emp, mode="AUTO")
+        db.session.add(row)
+        db.session.flush()
+    # Buscar próximo idx disponible
+    cons = AttendanceConsumption.query.filter_by(attendance_id=row.id).order_by(AttendanceConsumption.idx.asc()).all()
+    used = {c.idx for c in cons}
+    idx = 1
+    while idx in used and idx <= MAX_CONSUMOS:
+        idx += 1
+    if idx > MAX_CONSUMOS:
+        # si está lleno, sobreescribimos el último
+        AttendanceConsumption.query.filter_by(attendance_id=row.id, idx=MAX_CONSUMOS).delete()
+        idx = MAX_CONSUMOS
+    db.session.add(AttendanceConsumption(attendance_id=row.id, idx=idx, item="adelanto", amount=int(ar.amount_requested or 0)))
+
 
 def login_required(fn):
     @wraps(fn)
@@ -366,6 +465,57 @@ def admin_required(fn):
             abort(403)
         return fn(*args, **kwargs)
     return wrapper
+
+
+# ==============================
+# PORÁ Mobile (PIN)
+# ==============================
+
+MOBILE_SESSION_KEY = "m_user_id"
+
+def mobile_current_user():
+    uid = session.get(MOBILE_SESSION_KEY)
+    return User.query.get(uid) if uid else None
+
+def mobile_login_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not mobile_current_user():
+            return redirect(url_for("m_login"))
+        return fn(*args, **kwargs)
+    return wrapper
+
+def _pin_fingerprint(pin: str) -> str:
+    # Fingerprint determinístico (para búsqueda y unicidad) usando SECRET_KEY como "pepper".
+    # NO guarda el PIN en claro.
+    secret = (app.config.get("SECRET_KEY") or "").encode("utf-8")
+    p = (pin or "").strip().encode("utf-8")
+    return hashlib.sha256(secret + b"::" + p).hexdigest()
+
+def set_mobile_pin(user: User, pin: str):
+    pin = (pin or "").strip()
+    if not (pin.isdigit() and len(pin) == 4):
+        raise ValueError("El PIN debe tener 4 dígitos.")
+    fp = _pin_fingerprint(pin)
+    # Unicidad (no permitir duplicados)
+    exists = User.query.filter(User.mobile_pin_fingerprint == fp, User.id != user.id).first()
+    if exists:
+        raise ValueError("PIN en uso. Probá otra combinación.")
+    user.mobile_pin_hash = generate_password_hash(pin)
+    user.mobile_pin_fingerprint = fp
+    user.mobile_pin_attempts = 0
+    user.mobile_pin_locked_until = None
+
+def check_mobile_pin(user: User, pin: str) -> bool:
+    if not user or not user.mobile_pin_hash:
+        return False
+    return check_password_hash(user.mobile_pin_hash, (pin or "").strip())
+
+def is_mobile_locked(user: User) -> bool:
+    if not user:
+        return False
+    until = user.mobile_pin_locked_until
+    return bool(until and until > datetime.utcnow())
 
 # ==============================
 # UTILS
@@ -424,6 +574,50 @@ def fmt_money(n) -> str:
     return f"$ {s}"
 
 app.jinja_env.filters["money"] = fmt_money
+
+def weekday_es(value) -> str:
+    """Return weekday name in Spanish for a date/datetime/ISO-date string."""
+    if value is None:
+        return ""
+    try:
+        import datetime as _dt
+        if isinstance(value, _dt.datetime):
+            d = value.date()
+        elif isinstance(value, _dt.date):
+            d = value
+        else:
+            # accept 'YYYY-MM-DD' or 'YYYY-MM-DD ...'
+            s = str(value).strip()
+            s = s[:10]
+            d = _dt.datetime.strptime(s, "%Y-%m-%d").date()
+        names = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"]
+        return names[d.weekday()]
+    except Exception:
+        return ""
+app.jinja_env.filters["weekday_es"] = weekday_es
+
+def responsible_name(value) -> str:
+    """Normalize responsible display; fallback to 'Bernardo' when missing or numeric."""
+    s = "" if value is None else str(value).strip()
+    if not s:
+        return "Bernardo"
+    # numeric-like?
+    try:
+        float(s.replace(",", "."))
+        # if it parses to float and contains only digits/dot/comma, treat as invalid name
+        if re.fullmatch(r"[0-9]+([\.,][0-9]+)?", s):
+            return "Bernardo"
+    except Exception:
+        pass
+    return s
+app.jinja_env.filters["responsible_name"] = responsible_name
+
+
+# Make helper available in Jinja templates
+try:
+    app.jinja_env.globals["responsible_name"] = responsible_name
+except Exception:
+    pass
 
 def valid_time_str(t: str) -> bool:
     if not t:
@@ -603,11 +797,14 @@ def get_locked_opening_cash(day_obj: date, turn_code: str):
     return 0
 
 def can_edit_close(u: User, close_row: ShiftClose) -> bool:
+    """Permite re-ediciones del cierre (admin y no-admin).
+
+    Antes se limitaba a 1 edición para no-admin. A pedido, se habilita
+    edición ilimitada y se conserva el registro de quién editó (edited_by/at).
+    """
     if not u or not close_row:
         return False
-    if u.role == "admin":
-        return True
-    return (close_row.edit_count or 0) < 1
+    return True
 
 # ==============================
 # ASISTENCIA: GRUPOS / VACACIONES / CUPOS
@@ -981,6 +1178,12 @@ BASE_CSS = """
   table{border-collapse:collapse; width:100%;}
   th,td{border:1px solid #ddd; padding:10px; font-size:14px; vertical-align:middle;}
   th{background:#f3f3f3; text-align:left;}
+
+  /* Compact tables to show more rows (used in Resumen de cierres) */
+  .tight th,.tight td{padding:6px 8px; font-size:13px;}
+  .tight th{white-space:nowrap;}
+  .nowrap{white-space:nowrap;}
+
   .muted{color:#666; font-size:12px;}
   .btn{display:inline-block; padding:8px 12px; border:1px solid #bbb; border-radius:10px; background:#f6f6f6; cursor:pointer; color:#111; text-decoration:none;}
   .btn:hover{background:#ececec;}
@@ -1142,6 +1345,7 @@ def logout():
 # PANEL
 # ==============================
 HOME_HTML = """
+
 <!doctype html>
 <html lang="es">
 <head>
@@ -1189,6 +1393,19 @@ HOME_HTML = """
       <p class="t">Control de Stock</p>
       <p class="d">En construcción.</p>
     </a>
+  
+    <a class="card" href="{{ url_for('m_login') }}">
+      <p class="t">PORÁ Mobile</p>
+      <p class="d">Portal móvil (PIN): adelantos, asistencia (futuro), stock (futuro).</p>
+    </a>
+
+    {% if role == 'admin' %}
+    <a class="card" href="{{ url_for('admin_pin_mobile') }}">
+      <p class="t">PIN Mobile</p>
+      <p class="d">Asignar / cambiar PIN de acceso para el portal móvil.</p>
+    </a>
+    {% endif %}
+
   </div>
 </body>
 </html>
@@ -1204,6 +1421,594 @@ def home():
 @login_required
 def stock():
     return "<h2>Stock (en construcción)</h2><p><a href='/'>Volver</a></p>"
+
+
+ADMIN_PIN_HTML = """
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><title>PIN Mobile</title>{{ base_css|safe }}</head>
+<body style="max-width:900px;">
+  <div class="top">
+    <div>
+      <h2 style="margin:0;">PIN Mobile (PORÁ Mobile)</h2>
+      <div class="muted"><a href="{{ url_for('home') }}">← Volver al menú</a></div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:10px;">
+    <b>Reglas</b>
+    <ul class="muted">
+      <li>PIN de 4 dígitos (solo números).</li>
+      <li>No se permiten PIN duplicados.</li>
+      <li>Si cambiás un PIN, el anterior queda libre automáticamente.</li>
+    </ul>
+  </div>
+
+  {% if msg %}<div class="box" style="border-color:#7ad2a4;background:#dff5e6;"><b>{{msg}}</b></div>{% endif %}
+  {% if err %}<div class="box" style="border-color:#ffb866;background:#ffe6d6;"><b>Error:</b> {{err}}</div>{% endif %}
+
+  <table style="margin-top:12px;">
+    <tr><th>Usuario</th><th>Rol</th><th>PIN actual</th><th>Asignar / Cambiar PIN</th></tr>
+    {% for u in users %}
+      <tr>
+        <td><b>{{u.username}}</b></td>
+        <td>{{u.role}}</td>
+        <td>{{ "Sí" if u.mobile_pin_hash else "-" }}</td>
+        <td>
+          <form method="post" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <input type="hidden" name="uid" value="{{u.id}}">
+            <input type="text" name="pin" inputmode="numeric" pattern="\\d{4}" maxlength="4" placeholder="4 dígitos" required style="width:120px; padding:8px;">
+            <button class="btn">Guardar</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+</body>
+</html>
+"""
+
+
+@app.route("/admin/pin_mobile", methods=["GET","POST"])
+@login_required
+@admin_required
+def admin_pin_mobile():
+    err = None
+    msg = None
+    if request.method == "POST":
+        try:
+            uid = int(request.form.get("uid") or 0)
+            pin = (request.form.get("pin") or "").strip()
+            u = User.query.get(uid)
+            if not u:
+                raise ValueError("Usuario inválido.")
+            set_mobile_pin(u, pin)
+            db.session.commit()
+            msg = f"PIN actualizado para {u.username}."
+        except Exception as ex:
+            db.session.rollback()
+            err = str(ex)
+
+    users = User.query.filter_by(is_active=1).order_by(User.role.desc(), User.username.asc()).all()
+    return render_template_string(ADMIN_PIN_HTML, base_css=BASE_CSS, users=users, err=err, msg=msg)
+
+
+# ==============================
+# PORÁ Mobile - UI (fase 1)
+# ==============================
+
+MOBILE_BASE_CSS = """
+<style>
+  body{font-family:Arial, sans-serif; margin:0; padding:0; background:#0f0f14; color:#fff; overflow-x:hidden;}
+  .wrap{max-width:560px; margin:0 auto; padding:18px 14px 28px; box-sizing:border-box;}
+  .card{background:#171722; border:1px solid rgba(255,255,255,0.08); border-radius:18px; padding:16px; box-shadow: 0 10px 30px rgba(0,0,0,0.25); max-width: 100%; box-sizing: border-box;overflow-x: hidden;}
+  .title{font-size:26px; font-weight:800; margin:0 0 6px;}
+  .sub{color:rgba(255,255,255,0.7); font-size:13px; margin:0 0 14px;}
+  .err{background:rgba(255,90,90,0.18); border:1px solid rgba(255,90,90,0.35); padding:10px 12px; border-radius:14px; margin:10px 0;}
+  .ok{background:rgba(90,255,140,0.16); border:1px solid rgba(90,255,140,0.35); padding:10px 12px; border-radius:14px; margin:10px 0;}
+  .btn{display:block; width:100%; padding:14px 14px; border-radius:16px; border:1px solid rgba(255,255,255,0.12); background:#2a2a3a; color:#fff; font-weight:700; font-size:16px; cursor:pointer; text-align:center; text-decoration:none;}
+  .btn:active{transform:scale(0.99);}
+  .btn2{display:block; width:100%; padding:12px 14px; border-radius:16px; border:1px solid rgba(255,255,255,0.12); background:transparent; color:rgba(255,255,255,0.85); font-weight:700; font-size:14px; cursor:pointer; text-align:center; text-decoration:none;}
+  input,textarea{width:100%; padding:14px 14px; border-radius:16px; border:1px solid rgba(255,255,255,0.14); background:#101018; color:#fff; font-size:16px; box-sizing:border-box;}
+  textarea{min-height:88px; resize:vertical;}
+  label{display:block; font-size:12px; color:rgba(255,255,255,0.7); margin:12px 0 6px;}
+  .grid{display:grid; gap:10px;}
+  .muted{color:rgba(255,255,255,0.65); font-size:12px;}
+  .row{display:flex; gap:10px;}
+  .pill{display:inline-block; padding:6px 10px; border-radius:999px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.10); font-size:12px;}
+  table{width:100%; border-collapse:collapse; margin-top:10px;}
+  th,td{border-bottom:1px solid rgba(255,255,255,0.10); padding:10px 6px; font-size:13px; vertical-align:top;}
+  th{color:rgba(255,255,255,0.70); font-weight:700; text-align:left;}
+  .actions{display:flex; gap:8px; flex-wrap:wrap;}
+  .sbtn{padding:8px 10px; border-radius:12px; border:1px solid rgba(255,255,255,0.12); background:#2a2a3a; color:#fff; font-weight:700; cursor:pointer; font-size:12px;}
+  .sbtn2{padding:8px 10px; border-radius:12px; border:1px solid rgba(255,255,255,0.12); background:transparent; color:rgba(255,255,255,0.85); font-weight:700; cursor:pointer; font-size:12px;}
+
+  .decide-form{display:flex; flex-direction:column; gap:10px;}
+  .decide-form .comment{width:100%; box-sizing:border-box; padding:10px 12px; border-radius:14px; border:1px solid rgba(255,255,255,0.12); background:rgba(255,255,255,0.06); color:#fff; font-size:14px;}
+  .decide-form .actions{display:flex; gap:10px; align-items:center; justify-content:flex-start; flex-wrap:wrap;}
+</style>
+"""
+
+M_LOGIN_HTML = """
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PORÁ Mobile</title>
+""" + MOBILE_BASE_CSS + """
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="title">PORÁ Mobile</div>
+      <div class="sub">Ingresá tu PIN para continuar</div>
+
+      {% if err %}<div class="err"><b>{{err}}</b></div>{% endif %}
+      {% if msg %}<div class="ok"><b>{{msg}}</b></div>{% endif %}
+
+      <form method="post" class="grid" autocomplete="off">
+        <label>PIN (4 dígitos)</label>
+        <input name="pin" inputmode="numeric" pattern="\\d{4}" maxlength="4" placeholder="••••" required autofocus>
+        <button class="btn" type="submit">Ingresar</button>
+      </form>
+      <div class="muted" style="margin-top:10px;">
+        Si no tenés PIN, pedíselo a un administrador.
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+M_MENU_HTML = """
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PORÁ Mobile</title>
+""" + MOBILE_BASE_CSS + """
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="title">PORÁ Mobile</div>
+      <div class="sub">Hola, <b>{{u.username}}</b> <span class="pill">{{u.role}}</span></div>
+
+      <div class="grid" style="margin-top:10px;">
+        <a class="btn" href="{{ url_for('m_adv_new') }}">💰 Solicitar adelanto</a>
+        <a class="btn2" href="{{ url_for(\'m_adv_history\') }}">📜 Historial de adelantos</a>
+
+        {% if u.role == 'admin' %}
+          <a class="btn2" href="{{ url_for('m_adv_admin') }}">🧾 Aprobar / Rechazar adelantos</a>
+        {% endif %}
+
+        <form method="post" action="{{ url_for('m_logout') }}">
+          <button class="btn2" type="submit">Cerrar sesión</button>
+        </form>
+      </div>
+
+      <div class="muted" style="margin-top:12px;">
+        (Más adelante: asistencia, stock, etc.)
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+M_ADV_NEW_HTML = """
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Adelanto</title>
+""" + MOBILE_BASE_CSS + """
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="title">Adelanto</div>
+      <div class="sub">Solicitud de adelanto</div>
+
+      {% if err %}<div class="err"><b>{{err}}</b></div>{% endif %}
+      {% if msg %}<div class="ok"><b>{{msg}}</b></div>{% endif %}
+
+      <form method="post" class="grid">
+        <label>Monto</label>
+        <input name="amount" inputmode="numeric" placeholder="Ej: 20000" required>
+
+        <label>Fecha de adelanto</label>
+        <input name="req_date" type="date" required value="{{default_date}}">
+
+        <label>Motivo (opcional)</label>
+        <textarea name="reason" placeholder="Opcional..."></textarea>
+
+        <button class="btn" type="submit">Enviar solicitud</button>
+        <a class="btn2" href="{{ url_for('m_menu') }}">Volver</a>
+      </form>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+M_ADV_ADMIN_HTML = """
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Adelantos</title>
+""" + MOBILE_BASE_CSS + """
+<style>
+  /* Lista mobile más estable que una tabla (evita desalineados) */
+  .advlist{display:flex; flex-direction:column; gap:12px; margin-top:10px;}
+  .advitem{border:1px solid rgba(255,255,255,0.10); background:rgba(255,255,255,0.04); border-radius:16px; padding:12px;}
+  .advgrid{display:grid; grid-template-columns: 1fr 1fr; gap:10px 12px; align-items:start;}
+  .advgrid .lbl{font-size:12px; opacity:.75; margin-bottom:2px;}
+  .advgrid .val{font-size:14px;}
+  .advgrid .span2{grid-column:1 / -1;}
+  .decide-form{display:flex; flex-direction:column; gap:10px; margin-top:10px;}
+  .decide-form .comment{width:100%; box-sizing:border-box; padding:10px 12px; border-radius:14px; border:1px solid rgba(255,255,255,0.12); background:rgba(255,255,255,0.06); color:#fff; font-size:14px;}
+  .decide-form .actions{display:flex; gap:10px; flex-wrap:wrap;}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="title">Adelantos</div>
+      <div class="sub">Pendientes de decisión</div>
+
+      {% if err %}<div class="err"><b>{{err}}</b></div>{% endif %}
+      {% if msg %}<div class="ok"><b>{{msg}}</b></div>{% endif %}
+
+      {% if not rows %}
+        <div class="muted" style="margin-top:12px;">No hay adelantos pendientes.</div>
+      {% else %}
+        <div class="advlist">
+          {% for a,u in rows %}
+            <div class="advitem">
+              <div class="advgrid">
+                <div>
+                  <div class="lbl">Empleado</div>
+                  <div class="val"><b>{{u.username}}</b></div>
+                </div>
+                <div>
+                  <div class="lbl">Monto</div>
+                  <div class="val">{{ a.amount_requested|money }}</div>
+                </div>
+
+                <div>
+                  <div class="lbl">Día</div>
+                  <div class="val">{{ a.requested_for_date|weekday_es }}</div>
+                </div>
+                <div>
+                  <div class="lbl">Fecha</div>
+                  <div class="val">{{ a.requested_for_date }}</div>
+                </div>
+
+                <div class="span2">
+                  <div class="lbl">Motivo</div>
+                  <div class="val muted">{{ a.reason or "-" }}</div>
+                </div>
+              </div>
+
+              <form method="post" action="{{ url_for('m_adv_decide', adv_id=a.id) }}" class="decide-form">
+                <input type="text" name="admin_comment" placeholder="Comentario (opcional)" class="comment">
+                <div class="actions">
+                  <button class="sbtn" type="submit" name="decision" value="APPROVE">Aprobar</button>
+                  <button class="sbtn2" type="submit" name="decision" value="REJECT">Rechazar</button>
+                </div>
+              </form>
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+
+      <div style="margin-top:12px;">
+        <a class="btn2" href="{{ url_for('m_menu') }}">Volver</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+
+M_ADV_HISTORY_HTML = """
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Historial</title>
+""" + MOBILE_BASE_CSS + """
+<style>
+  .hist{margin-top:10px;}
+  .hist table{width:100%; border-collapse:collapse;}
+  .hist th,.hist td{padding:10px 6px; border-bottom:1px solid rgba(255,255,255,0.10); vertical-align:top;}
+  .pill2{display:inline-block; padding:4px 10px; border-radius:999px; border:1px solid rgba(255,255,255,0.14); font-size:12px;}
+  .st-ok{background:rgba(90,255,140,0.16); border-color:rgba(90,255,140,0.35);}
+  .st-no{background:rgba(255,90,90,0.16); border-color:rgba(255,90,90,0.35);}
+  .st-pe{background:rgba(255,210,90,0.14); border-color:rgba(255,210,90,0.30);}
+  .nowrap{white-space:nowrap;}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="title">Historial</div>
+      <div class="sub">Adelantos registrados</div>
+
+      <div class="hist">
+        <table>
+          <tr>
+            {% if is_admin %}<th class="nowrap">Empleado</th>{% endif %}
+            <th class="nowrap">Día</th>
+            <th class="nowrap">Fecha</th>
+            <th class="nowrap">Monto</th>
+            <th>Estado</th>
+            <th>Comentario</th>
+          </tr>
+          {% for r in rows %}
+            <tr>
+              {% if is_admin %}<td class="nowrap">{{ r.employee }}</td>{% endif %}
+              <td class="nowrap">{{ r.weekday }}</td>
+              <td class="nowrap">{{ r.req_date }}</td>
+              <td class="nowrap">{{ r.amount|money }}</td>
+              <td>
+                {% if r.status == 'APPROVED' %}
+                  <span class="pill2 st-ok">Aceptado</span>
+                {% elif r.status == 'REJECTED' %}
+                  <span class="pill2 st-no">Rechazado</span>
+                {% else %}
+                  <span class="pill2 st-pe">Pendiente</span>
+                {% endif %}
+              </td>
+              <td>{{ r.comment or '-' }}</td>
+            </tr>
+          {% endfor %}
+          {% if not rows %}
+            <tr><td colspan="{{ 6 if is_admin else 5 }}" class="muted">Sin adelantos.</td></tr>
+          {% endif %}
+        </table>
+      </div>
+
+      <div style="margin-top:12px;">
+        <a class="btn2" href="{{ url_for('m_menu') }}">Volver</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+
+
+def _mobile_fail_state():
+    # Estado de bloqueo simple para intentos sin usuario (sesión anónima)
+    until_iso = session.get("m_lock_until")
+    if until_iso:
+        try:
+            until = datetime.fromisoformat(until_iso)
+            if until > datetime.utcnow():
+                return True, until
+        except Exception:
+            pass
+    return False, None
+
+def _mobile_set_lock(minutes=10):
+    until = datetime.utcnow() + timedelta(minutes=minutes)
+    session["m_lock_until"] = until.isoformat()
+    return until
+
+
+@app.route("/admin/fix_responsables")
+@login_required
+@admin_required
+def admin_fix_responsables():
+    """Corrige turnos donde 'responsible' quedó con un número (por error de carga/import).
+    Heurística: si responsible es numérico y opening_cash == 0, asumimos que ese número era la caja inicial.
+    Luego seteamos responsible con el primer admin configurado.
+    """
+    fixed = 0
+    default_admin = ADMINS[0] if ADMINS else "Admin"
+    for s in Shift.query.all():
+        resp = (s.responsible or "").strip()
+        if not resp:
+            continue
+        if resp in EMPLOYEES or resp in ADMINS:
+            continue
+        try:
+            val = float(resp)
+        except Exception:
+            continue
+        if int(s.opening_cash or 0) == 0 and val >= 0:
+            s.opening_cash = int(round(val))
+            s.responsible = default_admin
+            fixed += 1
+    if fixed:
+        db.session.commit()
+    return render_template_string(
+        BASE_MSG_HTML,
+        base_css=BASE_CSS,
+        title="Fix responsables",
+        msg=f"Listo. Registros corregidos: {fixed}.",
+        back=url_for("caja_index")
+    )
+
+
+@app.route("/m", methods=["GET","POST"])
+def m_login():
+    # Si ya está logueado en mobile
+    if mobile_current_user():
+        return redirect(url_for("m_menu"))
+
+    locked, until = _mobile_fail_state()
+    if locked:
+        mins = int((until - datetime.utcnow()).total_seconds() // 60) + 1
+        return render_template_string(M_LOGIN_HTML, err=f"Demasiados intentos. Esperá {mins} min.", msg=None)
+
+    err = None
+    msg = None
+    if request.method == "POST":
+        pin = (request.form.get("pin") or "").strip()
+
+        # Validación simple
+        if not (pin.isdigit() and len(pin) == 4):
+            err = "PIN inválido."
+        else:
+            fp = _pin_fingerprint(pin)
+            u = User.query.filter_by(mobile_pin_fingerprint=fp, is_active=1).first()
+
+            # Si no hay usuario con ese PIN (o no tiene PIN configurado)
+            if not u or not u.mobile_pin_hash:
+                fails = int(session.get("m_fail", 0)) + 1
+                session["m_fail"] = fails
+                if fails >= 5:
+                    until = _mobile_set_lock(10)
+                    mins = int((until - datetime.utcnow()).total_seconds() // 60) + 1
+                    err = f"Demasiados intentos. Esperá {mins} min."
+                else:
+                    err = "PIN incorrecto."
+            else:
+                if is_mobile_locked(u):
+                    mins = int((u.mobile_pin_locked_until - datetime.utcnow()).total_seconds() // 60) + 1
+                    err = f"PIN bloqueado. Esperá {mins} min."
+                elif not check_mobile_pin(u, pin):
+                    u.mobile_pin_attempts = int(u.mobile_pin_attempts or 0) + 1
+                    if u.mobile_pin_attempts >= 5:
+                        u.mobile_pin_locked_until = datetime.utcnow() + timedelta(minutes=10)
+                        u.mobile_pin_attempts = 0
+                        db.session.commit()
+                        err = "Demasiados intentos. Bloqueado 10 min."
+                    else:
+                        db.session.commit()
+                        err = "PIN incorrecto."
+                else:
+                    # OK
+                    u.mobile_pin_attempts = 0
+                    u.mobile_pin_locked_until = None
+                    db.session.commit()
+
+                    session[MOBILE_SESSION_KEY] = u.id
+                    session.pop("m_fail", None)
+                    session.pop("m_lock_until", None)
+                    return redirect(url_for("m_menu"))
+
+    return render_template_string(M_LOGIN_HTML, err=err, msg=msg)
+
+@app.route("/m/menu")
+@mobile_login_required
+def m_menu():
+    return render_template_string(M_MENU_HTML, u=mobile_current_user())
+
+@app.route("/m/logout", methods=["POST"])
+def m_logout():
+    session.pop(MOBILE_SESSION_KEY, None)
+    return redirect(url_for("m_login"))
+
+@app.route("/m/adelantos/nuevo", methods=["GET","POST"])
+@mobile_login_required
+def m_adv_new():
+    u = mobile_current_user()
+    err = None
+    msg = None
+    default_date = date.today().isoformat()
+
+    if request.method == "POST":
+        try:
+            amount = safe_int(request.form.get("amount"))
+            req_date_s = (request.form.get("req_date") or "").strip()
+            reason = (request.form.get("reason") or "").strip() or None
+
+            if amount is None or amount <= 0:
+                raise ValueError("Monto inválido.")
+            if not req_date_s:
+                raise ValueError("Fecha inválida.")
+            req_date = date.fromisoformat(req_date_s)
+
+            ar = AdvanceRequest(
+                user_id=u.id,
+                amount_requested=int(amount),
+                requested_for_date=req_date,
+                reason=reason,
+                status="PENDING",
+                created_at=datetime.utcnow()
+            )
+            db.session.add(ar)
+            db.session.commit()
+            msg = "Solicitud enviada ✅"
+        except Exception as ex:
+            db.session.rollback()
+            err = str(ex)
+
+    return render_template_string(M_ADV_NEW_HTML, err=err, msg=msg, default_date=default_date)
+
+@app.route("/m/admin/adelantos")
+@mobile_login_required
+def m_adv_admin():
+    u = mobile_current_user()
+    if not u or u.role != "admin":
+        abort(403)
+
+    rows = (
+        db.session.query(AdvanceRequest, User)
+        .join(User, User.id == AdvanceRequest.user_id)
+        .filter(AdvanceRequest.status == "PENDING")
+        .order_by(AdvanceRequest.created_at.asc())
+        .all()
+    )
+    return render_template_string(M_ADV_ADMIN_HTML, rows=rows, err=None, msg=None)
+
+@app.route("/m/admin/adelantos/<int:adv_id>/decide", methods=["POST"])
+@mobile_login_required
+def m_adv_decide(adv_id: int):
+    u = mobile_current_user()
+    if not u or u.role != "admin":
+        abort(403)
+
+    decision = (request.form.get("decision") or "").strip().upper()
+    admin_comment = (request.form.get("admin_comment") or "").strip() or None
+    if decision not in ("APPROVE", "REJECT"):
+        return redirect(url_for("m_adv_admin"))
+
+    ar = AdvanceRequest.query.get_or_404(adv_id)
+    if ar.status != "PENDING":
+        return redirect(url_for("m_adv_admin"))
+
+    ar.status = "APPROVED" if decision == "APPROVE" else "REJECTED"
+    ar.decided_at = datetime.utcnow()
+    ar.decided_by_user_id = u.id
+    ar.admin_comment = admin_comment
+    if ar.status == "APPROVED":
+        sync_advance_to_attendance(ar)
+    db.session.commit()
+    return redirect(url_for("m_adv_admin"))
+
+
+
+@app.route("/m/adelantos/historial")
+@mobile_login_required
+def m_adv_history():
+    u = mobile_current_user()
+    if not u:
+        abort(403)
+
+    q = (
+        db.session.query(AdvanceRequest, User)
+        .join(User, User.id == AdvanceRequest.user_id)
+    )
+    # Admin ve todos; user ve solo los suyos
+    if u.role != "admin":
+        q = q.filter(AdvanceRequest.user_id == u.id)
+
+    q = q.order_by(AdvanceRequest.created_at.desc()).limit(200)
+    rows_db = q.all()
+
+    rows = []
+    for ar, usr in rows_db:
+        # Día/fecha = requested_for_date (la fecha deseada)
+        req_d = ar.requested_for_date or ar.created_at.date()
+        rows.append({
+            "employee": (getattr(usr, "username", None) or getattr(usr, "name", None) or ""),
+            "weekday": weekday_es(req_d),
+            "req_date": req_d.isoformat(),
+            "amount": int(ar.amount_requested or 0),
+            "status": ar.status or "PENDING",
+            "comment": (ar.admin_comment or None),
+        })
+
+    return render_template_string(M_ADV_HISTORY_HTML, rows=rows, is_admin=(u.role=="admin"))
+
 
 # ============================================================
 # =====================  CAJA (UI)  ===========================
@@ -1235,9 +2040,10 @@ def get_caja_summary(limit=200, start: Optional[date]=None, end: Optional[date]=
 
         rows.append({
             "day": s.day.isoformat(),
+            "weekday": weekday_es(s.day),
             "turn_code": s.turn,
             "turn_name": TURN_NAMES.get(s.turn, s.turn),
-            "responsible": s.responsible,
+            "responsible": responsible_name(s.responsible),
             "opening_cash": int(s.opening_cash or 0),
             "sales_cash": int(s.sales_cash or 0),
             "sales_mp": int(s.sales_mp or 0),
@@ -1294,8 +2100,9 @@ CAJA_INDEX_HTML = """
 </div>
 
 <h2>Turnos del día</h2>
-<table>
+<table class="tight">
   <tr>
+    <th>Día</th>
     <th>Turno</th>
     <th>Responsable</th>
     <th>Estado</th>
@@ -1308,8 +2115,9 @@ CAJA_INDEX_HTML = """
   {% for code,name in turns %}
     {% set s = shifts.get(code) %}
     <tr>
+      <td>{{ weekday_name }}</td>
       <td><b>{{name}}</b></td>
-      <td>{{ s.responsible if s else "-" }}</td>
+      <td>{{ responsible_name(s.responsible) if s else "-" }}</td>
       <td>
         {% if not s %}
           <span class="badge badge-open">No abierto</span>
@@ -1408,9 +2216,10 @@ CAJA_INDEX_HTML = """
   </div>
 </form>
 
-<table>
+<table class="tight">
   <tr>
-    <th>Fecha</th>
+    <th>Día</th>
+    <th class="nowrap">Fecha</th>
     <th>Turno</th>
     <th>Responsable</th>
     <th>Caja Inicial</th>
@@ -1427,7 +2236,8 @@ CAJA_INDEX_HTML = """
 
   {% for row in summary %}
     <tr>
-      <td>{{ row.day }}</td>
+      <td class="nowrap">{{ row.weekday }}</td>
+      <td class="nowrap">{{ row.day }}</td>
       <td>{{ row.turn_name }}</td>
       <td>{{ row.responsible }}</td>
       <td>{{ row.opening_cash|money }}</td>
@@ -1444,7 +2254,7 @@ CAJA_INDEX_HTML = """
   {% endfor %}
 
   {% if not summary %}
-    <tr><td colspan="13" class="muted">Sin cierres para el filtro seleccionado.</td></tr>
+    <tr><td colspan="14" class="muted">Sin cierres para el filtro seleccionado.</td></tr>
   {% endif %}
 </table>
 
@@ -1882,9 +2692,17 @@ def caja_index():
             )
             ingreso_neto_total_dia = (ventas_netas_map.get(shifts["MORNING"].id, 0) + ventas_netas_map.get(shifts["AFTERNOON"].id, 0))
 
+    def is_valid_responsible(name: str) -> bool:
+        name = (name or "").strip()
+        if not name:
+            return False
+        if name in EMPLOYEES or name in ADMINS:
+            return True
+        return False
+
     responsibles = sorted({
         s.responsible for s in Shift.query.filter(Shift.status == "CLOSED").all()
-        if s.responsible
+        if is_valid_responsible(s.responsible)
     })
 
     summary = get_caja_summary(
@@ -1894,6 +2712,8 @@ def caja_index():
         turn=turn,
         responsible=resp
     )
+
+    weekday_name = weekday_es(day_obj)
 
     return render_template_string(
         CAJA_INDEX_HTML,
@@ -1913,7 +2733,8 @@ def caja_index():
         end=end,
         turn=turn,
         resp=resp,
-        responsibles=responsibles
+        responsibles=responsibles,
+        weekday_name=weekday_name
     )
 
 @app.route("/caja/open/<turn>", methods=["GET","POST"])
@@ -1933,8 +2754,12 @@ def open_shift(turn):
         responsible = (request.form.get("responsible") or "").strip()
         opening_cash = safe_int(request.form.get("opening_cash"))
 
-        if not responsible or opening_cash is None:
+        if opening_cash is None:
             return redirect(url_for("open_shift", turn=turn, d=d))
+
+        # Responsible can be omitted (or was imported wrong). Default to current user / Bernardo.
+        if (not responsible) or re.fullmatch(r"[0-9]+([\.,][0-9]+)?", responsible):
+            responsible = default_responsible or "Bernardo"
 
         if locked_opening is not None and int(opening_cash) != int(locked_opening):
             return redirect(url_for("open_shift", turn=turn, d=d))
@@ -2093,8 +2918,11 @@ def edit_all(id):
 
         responsible = (request.form.get("responsible") or "").strip()
         opening_cash = safe_int(request.form.get("opening_cash"))
-        if not responsible or opening_cash is None:
+        if opening_cash is None:
             return redirect(url_for("edit_all", id=id, d=d))
+
+        if (not responsible) or re.fullmatch(r"[0-9]+([\.,][0-9]+)?", responsible):
+            responsible = (u.username if u else None) or "Bernardo"
 
         s.responsible = responsible
         s.opening_cash = int(opening_cash)
@@ -2420,8 +3248,16 @@ def import_caja():
                     if tt not in ("MORNING","AFTERNOON"):
                         continue
 
-                    responsible = str(r[idxs["responsible"]] or "").strip() or "Bernardo"
+                    responsible = str(r[idxs["responsible"]] or "").strip() or ""
                     opening_cash = int(r[idxs["opening_cash"]] or 0)
+                    # Some historical imports had the "responsable" column shifted with opening cash.
+                    if (not responsible) or re.fullmatch(r"[0-9]+([\.,][0-9]+)?", responsible):
+                        if opening_cash == 0:
+                            try:
+                                opening_cash = int(float(str(r[idxs["responsible"]] or 0).replace(",", ".")))
+                            except Exception:
+                                pass
+                        responsible = "Bernardo"
                     sales_cash = int(r[idxs["sales_cash"]] or 0)
                     sales_mp = int(r[idxs["sales_mp"]] or 0)
                     sales_pya = int(r[idxs["sales_pya"]] or 0)
@@ -2569,8 +3405,15 @@ def import_caja_json():
                         continue
 
                     day_obj = date.fromisoformat(dd)
-                    responsible = (s.get("responsible") or "Bernardo").strip()
+                    responsible = (s.get("responsible") or "").strip()
                     opening_cash = int(s.get("opening_cash") or 0)
+                    if (not responsible) or re.fullmatch(r"[0-9]+([\.,][0-9]+)?", str(responsible)):
+                        if opening_cash == 0:
+                            try:
+                                opening_cash = int(float(str(s.get("responsible") or 0).replace(",", ".")))
+                            except Exception:
+                                pass
+                        responsible = "Bernardo"
                     sales_cash = int(s.get("sales_cash") or 0)
                     sales_mp = int(s.get("sales_mp") or 0)
                     sales_pya = int(s.get("sales_pya") or 0)
