@@ -2656,6 +2656,50 @@ EDIT_ALL_HTML = """
 </html>
 """
 
+
+def is_placeholder_shift(s: "Shift") -> bool:
+    """Devuelve True si el turno existe en BD pero en la práctica está 'vacío'
+    (típico de importaciones/placeholder): todo en 0, sin egresos, y (si existe) cierre vacío.
+    En ese caso, en el panel principal lo tratamos como NO ABIERTO para mostrar el botón 'Abrir'.
+    """
+    if not s:
+        return True
+
+    # Solo consideramos placeholder a turnos CERRADOS en cero (evita ocultar un turno abierto recién iniciado).
+    if (s.status or "").upper() != "CLOSED":
+        return False
+
+    nums = [
+        int(s.opening_cash or 0),
+        int(s.sales_cash or 0),
+        int(s.sales_mp or 0),
+        int(s.sales_pya or 0),
+        int(s.sales_rappi or 0),
+        int(getattr(s, "sales_apps", 0) or 0),
+    ]
+    if any(v != 0 for v in nums):
+        return False
+
+    # Si tiene egresos, NO es placeholder
+    if CashExpense.query.filter_by(shift_id=s.id).first():
+        return False
+
+    c = ShiftClose.query.filter_by(shift_id=s.id).first()
+    if c:
+        close_nums = [
+            int(c.withdrawn_cash or 0),
+            int(c.ending_calc or 0),
+            int(c.ending_cash or 0),
+            int(c.difference or 0),
+        ]
+        if any(v != 0 for v in close_nums):
+            return False
+        if (c.note or "").strip():
+            return False
+
+    return True
+
+
 @app.route("/caja")
 @login_required
 def caja_index():
@@ -2669,11 +2713,19 @@ def caja_index():
 
     shifts = {s.turn: s for s in Shift.query.filter_by(day=day_obj).all()}
 
+    # Si por importación o error existe un turno 'cerrado' totalmente en cero, lo tratamos como NO ABIERTO.
+    # (Así el usuario ve el botón 'Abrir' en vez de 'Ver/Editar'.)
+    for _t, _s in list(shifts.items()):
+        if _s and is_placeholder_shift(_s):
+            shifts[_t] = None
+
     closes = {}
     can_edit_map = {}
     u = current_user()
 
     for s in shifts.values():
+        if not s:
+            continue
         if s.status == "CLOSED":
             c = ShiftClose.query.filter_by(shift_id=s.id).first()
             closes[s.id] = c
@@ -2683,6 +2735,8 @@ def caja_index():
     efectivo_disp_map = {}
 
     for s in shifts.values():
+        if not s:
+            continue
         if s.status == "CLOSED":
             ventas_netas_map[s.id] = int(calc_ingreso_neto(s))
             c = closes.get(s.id)
@@ -2750,7 +2804,18 @@ def open_shift(turn):
 
     existing = Shift.query.filter_by(day=day_obj, turn=turn).first()
     if existing:
-        return redirect(url_for("shift", id=existing.id, d=d))
+        # Si existe como placeholder (cerrado y todo en 0), lo limpiamos para permitir "Abrir" correctamente.
+        if is_placeholder_shift(existing):
+            try:
+                ShiftClose.query.filter_by(shift_id=existing.id).delete()
+                CashExpense.query.filter_by(shift_id=existing.id).delete()
+                db.session.delete(existing)
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+            existing = None
+        else:
+            return redirect(url_for("shift", id=existing.id, d=d))
 
     locked_opening = get_locked_opening_cash(day_obj, turn)
     u = current_user()
