@@ -741,62 +741,39 @@ def extract_consumptions_and_clean_notes(notes: str, max_items: int = 5):
 def expenses_total(shift_id: int) -> int:
     return sum(e.amount for e in CashExpense.query.filter_by(shift_id=shift_id).all())
 
-
-def cash_final_value(s: Shift) -> int:
-    """Caja final (efectivo que queda en la caja) guardada en el cierre.
-    - Para turnos OPEN (aún sin cierre), devuelve 0.
-    """
-    try:
-        sid = getattr(s, "id", None)
-        if not sid:
-            return 0
-        c = ShiftClose.query.filter_by(shift_id=sid).first()
-        return int(c.ending_cash or 0) if c else 0
-    except Exception:
-        return 0
-
-def cash_bruto(s: Shift, cash_final: Optional[int] = None) -> int:
-    """Efectivo bruto = Retirado (efectivo total) + Caja final."""
-    retirado = int(s.sales_cash or 0)
-    if cash_final is None:
-        cash_final = cash_final_value(s)
-    return retirado + int(cash_final or 0)
+def cash_bruto(s: Shift) -> int:
+    # Efectivo total contado en caja al cierre (incluye caja inicial).
+    return int(s.sales_cash or 0)
 
 def cash_neto(s: Shift) -> int:
-    """Efectivo neto = Retirado - Caja inicial.
-    Nota: puede ser negativo si Retirado < Caja inicial (ej: faltante / error de carga).
-    """
-    return int(s.sales_cash or 0) - int(s.opening_cash or 0)
+    # Efectivo neto del turno: efectivo bruto - caja inicial.
+    return max(0, int(s.sales_cash or 0) - int(s.opening_cash or 0))
 
-def calc_ingreso_bruto(s: Shift, egresos: int, cash_final: Optional[int] = None) -> int:
-    """Ingreso total (bruto) =
-       (Efectivo bruto + MP + PedidosYa + Rappi) + Egresos
-       donde Efectivo bruto = Retirado + Caja final.
-    """
+def calc_ingreso_neto(s: Shift) -> int:
+    # Ingreso neto del turno: efectivo neto + medios electrónicos (sin sumar caja inicial).
     return (
-        cash_bruto(s, cash_final=cash_final) +
+        cash_neto(s) +
+        (s.sales_mp or 0) +
+        (getattr(s, "sales_pya", 0) or 0) +
+        (getattr(s, "sales_rappi", 0) or 0)
+    )
+
+def calc_ingreso_bruto(s: Shift, egresos: int) -> int:
+    # Ingreso bruto del turno:
+    # (efectivo bruto + medios electrónicos) + egresos.
+    # Se suma egresos porque, al contar la caja, esos pagos ya salieron del efectivo;
+    # para reconstruir el ingreso real del turno, se re-incorporan como ingreso.
+    return (
+        cash_bruto(s) +
         int(s.sales_mp or 0) +
         int(getattr(s, "sales_pya", 0) or 0) +
         int(getattr(s, "sales_rappi", 0) or 0) +
         int(egresos or 0)
     )
 
-def calc_ingreso_neto(s: Shift, egresos: Optional[int] = None, cash_final: Optional[int] = None) -> int:
-    """Ingreso neto = Ingreso total (bruto) - Egresos total."""
-    if egresos is None:
-        try:
-            egresos = expenses_total(int(s.id))
-        except Exception:
-            egresos = 0
-    return calc_ingreso_bruto(s, int(egresos or 0), cash_final=cash_final) - int(egresos or 0)
-
-def calc_ending_calc(cash_final: int, withdrawn: int) -> int:
-    """Compatibilidad legacy.
-    Antes: caja final teórica = efectivo bruto - retirado.
-    Ahora: la Caja final se carga manualmente, por lo que la 'teórica' coincide con la real.
-    """
-    return int(cash_final or 0)
-
+def calc_ending_calc(cash_bruto_val: int, withdrawn: int) -> int:
+    # Caja final teórica (post-retiro) = efectivo bruto - retirado
+    return int(cash_bruto_val or 0) - int(withdrawn or 0)
 
 def prev_turn_of(day_obj: date, turn_code: str):
     if turn_code == "AFTERNOON":
@@ -2059,9 +2036,8 @@ def get_caja_summary(limit=200, start: Optional[date]=None, end: Optional[date]=
 
     for s, c in q:
         exp = expenses_total(s.id)
-        cash_final = int(c.ending_cash or 0)
-        bruto = calc_ingreso_bruto(s, exp, cash_final=cash_final)
-        neto = calc_ingreso_neto(s, egresos=exp, cash_final=cash_final)
+        neto = calc_ingreso_neto(s)
+        bruto = calc_ingreso_bruto(s, exp)
 
         rows.append({
             "day": s.day.isoformat(),
@@ -2070,16 +2046,14 @@ def get_caja_summary(limit=200, start: Optional[date]=None, end: Optional[date]=
             "turn_name": TURN_NAMES.get(s.turn, s.turn),
             "responsible": responsible_name(s.responsible),
             "opening_cash": int(s.opening_cash or 0),
-            "retirado": int(s.sales_cash or 0),
-            "cash_final": cash_final,
-            "sales_cash": int(cash_bruto(s, cash_final=cash_final)),
+            "sales_cash": int(s.sales_cash or 0),
             "sales_mp": int(s.sales_mp or 0),
             "sales_pya": int(getattr(s, "sales_pya", 0) or 0),
             "sales_rappi": int(getattr(s, "sales_rappi", 0) or 0),
             "ventas_bruto": int(bruto),
             "ventas_neto": int(neto),
             "expenses": int(exp),
-            "withdrawn": int(s.sales_cash or 0),
+            "withdrawn": int(c.withdrawn_cash or 0),
             "ending_real": int(c.ending_cash or 0),
             "difference": int(c.difference or 0),
             "close_ok": int(c.close_ok or 1),
@@ -2370,44 +2344,25 @@ SHIFT_HTML = """
   <p class="muted">Este turno ya no puede editarse con tu usuario.</p>
 {% endif %}
 
-
 <h3>Ventas</h3>
-<div class="box">
-  <div class="row" style="align-items:flex-start;">
-    <div style="min-width:280px;">
-      <label><b>Retirado (Efectivo total)</b></label><br>
-      <input type="number" name="sales_cash" min="0" value="{{s.sales_cash}}" {{'disabled' if s.status=='CLOSED' else ''}} id="retirado_input">
-      <div class="muted" style="margin-top:6px;">
-        Efectivo bruto (auto): <b id="ef_bruto_lbl">{{ (s.sales_cash + (close.ending_cash if close else 0))|money }}</b><br>
-        Efectivo neto (auto): <b id="ef_neto_lbl">{{ (s.sales_cash - s.opening_cash)|money }}</b>
-      </div>
-    </div>
+<form method="post" action="{{ url_for('sales', id=s.id, d=d) }}">
+  Efectivo total (bruto):
+  <input type="number" name="sales_cash" min="0" value="{{s.sales_cash}}" {{'disabled' if s.status=='CLOSED' else ''}}><br><br>
+  <div class="muted">Efectivo neto (auto): <b>{{ ((s.sales_cash - s.opening_cash) if (s.sales_cash - s.opening_cash) > 0 else 0)|money }}</b></div><br>
 
-    <div style="min-width:320px;">
-      <label><b>Caja final (efectivo que queda en la caja)</b></label><br>
-      <input type="number" name="cash_final" min="0" value="{{ (close.ending_cash if close else 0) }}" {{'disabled' if s.status=='CLOSED' else ''}} id="caja_final_input">
-      <div class="muted" style="margin-top:6px;">
-        (Se carga manualmente)
-      </div>
-    </div>
-  </div>
+  Ventas Mercado Pago:
+  <input type="number" name="sales_mp" min="0" value="{{s.sales_mp}}" {{'disabled' if s.status=='CLOSED' else ''}}><br><br>
 
-  <div class="row" style="margin-top:10px;">
-    <div>
-      Ventas Mercado Pago:<br>
-      <input type="number" name="sales_mp" min="0" value="{{s.sales_mp}}" {{'disabled' if s.status=='CLOSED' else ''}} id="mp_input">
-    </div>
-    <div>
-      Ventas Pedidos Ya:<br>
-      <input type="number" name="sales_pya" min="0" value="{{s.sales_pya}}" {{'disabled' if s.status=='CLOSED' else ''}} id="pya_input">
-    </div>
-    <div>
-      Ventas Rappi:<br>
-      <input type="number" name="sales_rappi" min="0" value="{{s.sales_rappi}}" {{'disabled' if s.status=='CLOSED' else ''}} id="rappi_input">
-    </div>
-  </div>
-</div>
+  Ventas Pedidos Ya:
+  <input type="number" name="sales_pya" min="0" value="{{s.sales_pya}}" {{'disabled' if s.status=='CLOSED' else ''}}><br><br>
 
+  Ventas Rappi:
+  <input type="number" name="sales_rappi" min="0" value="{{s.sales_rappi}}" {{'disabled' if s.status=='CLOSED' else ''}}><br><br>
+
+  {% if s.status != 'CLOSED' %}
+    <button class="btn">Guardar ventas</button>
+  {% endif %}
+</form>
 
 <h3>Egresos (caja chica, efectivo)</h3>
 {% if s.status != 'CLOSED' %}
@@ -2433,144 +2388,132 @@ SHIFT_HTML = """
   {% endif %}
 </table>
 
-
 <h3>Cierre</h3>
 
 <div class="box">
   <div class="row">
-    <div><b>Egresos total:</b> <span id="egresos_total_lbl">{{ egresos_total|money }}</span></div>
-    <div><b>Ingreso total (bruto):</b> <span id="ingreso_bruto_lbl">{{ ingreso_bruto|money }}</span></div>
-    <div><b>Ingreso neto:</b> <span id="ingreso_neto_lbl">{{ ingreso_neto|money }}</span></div>
-    <div><b>Efectivo disponible:</b> <span id="ef_disp_lbl">{{ efectivo_disponible|money }}</span></div>
+    <div><b>Egresos total:</b> {{ egresos_total|money }}</div>
+    <div><b>Ingreso total (bruto):</b> {{ ingreso_bruto|money }}</div>
+    <div><b>Ingreso neto:</b> {{ ingreso_neto|money }}</div>
+    <div><b>Efectivo disponible:</b> {{ efectivo_disponible|money }}</div>
   </div>
   <div class="muted" style="margin-top:6px;">
-    Efectivo bruto = Retirado + Caja final.<br>
-    Efectivo neto = Retirado - Caja inicial.<br>
+    Ingreso neto = (Efectivo neto + MP + PedidosYa + Rappi). Efectivo neto = Efectivo bruto - Caja inicial.<br>
     Ingreso total (bruto) = (Efectivo bruto + MP + PedidosYa + Rappi) + Egresos.<br>
-    Ingreso neto = Ingreso total (bruto) - Egresos total.<br>
-    Efectivo disponible = Retirado.
+    Efectivo disponible = Efectivo bruto (lo contado en caja).
   </div>
 </div>
 
 {% if close %}
   <div class="box" style="margin-top:10px;">
     <div class="row">
-      <div><b>Retirado:</b> {{ s.sales_cash|money }}</div>
-      <div><b>Caja final:</b> {{ close.ending_cash|money }}</div>
+      <div><b>Retirado:</b> {{close.withdrawn_cash|money}}</div>
+      <div><b>Caja final REAL:</b> {{close.ending_cash|money}}</div>
+      <div><b>Diferencia:</b> <span class="{{ 'good' if close.difference==0 else 'bad' }}">{{ close.difference|money }}</span></div>
+      <div><b>Estado:</b> {{ 'OK' if close.close_ok==1 else 'NO OK' }}</div>
     </div>
+    <div class="muted" style="margin-top:6px;"><b>Obs:</b> {{close.note or ''}}</div>
+
+    {% if close.edited_by %}
+      <div class="muted" style="margin-top:6px;">
+        <b>Editado:</b> {{close.edited_by}} — {{close.edited_at}} — {{close.edit_reason}}
+      </div>
+    {% endif %}
   </div>
 {% else %}
-  <form method="post" action="{{ url_for('close_shift', id=s.id, d=d) }}" style="margin-top:14px;" id="saveForm">
-    <input type="hidden" name="sales_cash" id="h_sales_cash">
-    <input type="hidden" name="cash_final" id="h_cash_final">
-    <input type="hidden" name="sales_mp" id="h_sales_mp">
-    <input type="hidden" name="sales_pya" id="h_sales_pya">
-    <input type="hidden" name="sales_rappi" id="h_sales_rappi">
-    <button class="btn" style="margin-top:10px;">Guardar registro</button>
+
+  <form method="post" action="{{ url_for('close_shift', id=s.id, d=d) }}" style="margin-top:12px;" id="closeForm">
+    <div class="box">
+      <div class="row">
+        <div>
+          <label><b>Retirado (dueño/gerencia)</b></label><br>
+          <input type="number" name="withdrawn" min="0" required id="withdrawn">
+        </div>
+
+        <div>
+          <label><b>Estado</b></label><br>
+          <select name="ok_status" id="ok_status" required>
+            <option value="" selected>Seleccionar...</option>
+            <option value="OK">OK</option>
+            <option value="NOOK">NO OK</option>
+          </select>
+        </div>
+
+        <div id="real_box" style="display:none;">
+          <label><b>Caja final REAL</b></label><br>
+          <input type="number" name="ending_real" min="0" id="ending_real">
+          <div class="muted">Obligatoria si NO OK</div>
+        </div>
+      </div>
+
+      <div style="margin-top:10px;">
+        <label><b>Observación (si NO OK)</b></label><br>
+        <input name="note" id="note" style="width:100%;" disabled placeholder="Explicar el motivo de la diferencia...">
+      </div>
+    </div>
+
+    <br>
+    <button class="btn">Cerrar turno</button>
   </form>
 
   <script>
-    const sid = "{{s.id}}";
+    const okStatusEl = document.getElementById("ok_status");
+    const realBox = document.getElementById("real_box");
+    const endingRealEl = document.getElementById("ending_real");
+    const noteEl = document.getElementById("note");
+    const form = document.getElementById("closeForm");
 
-    function toInt(v){
-      v = (v || "").toString().trim();
-      if(v === "") return 0;
-      const n = parseInt(v, 10);
-      return isNaN(n) ? 0 : n;
+    function updateUI() {
+      const status = okStatusEl.value;
+      if (status === "NOOK") {
+        realBox.style.display = "block";
+        endingRealEl.required = true;
+        noteEl.disabled = false;
+        noteEl.required = true;
+      } else if (status === "OK") {
+        realBox.style.display = "none";
+        endingRealEl.required = false;
+        endingRealEl.value = "";
+        noteEl.disabled = true;
+        noteEl.required = false;
+        noteEl.value = "";
+      } else {
+        realBox.style.display = "none";
+        endingRealEl.required = false;
+        noteEl.disabled = true;
+        noteEl.required = false;
+      }
     }
 
-    const retiradoEl = document.getElementById("retirado_input");
-    const cajaFinalEl = document.getElementById("caja_final_input");
-    const mpEl = document.getElementById("mp_input");
-    const pyaEl = document.getElementById("pya_input");
-    const rappiEl = document.getElementById("rappi_input");
+    okStatusEl.addEventListener("change", updateUI);
 
-    const efBrutoLbl = document.getElementById("ef_bruto_lbl");
-    const efNetoLbl = document.getElementById("ef_neto_lbl");
-    const ingresoBrutoLbl = document.getElementById("ingreso_bruto_lbl");
-    const ingresoNetoLbl = document.getElementById("ingreso_neto_lbl");
-    const efDispLbl = document.getElementById("ef_disp_lbl");
-
-    const egresosTotal = {{ egresos_total|int }};
-
-    function fmtMoney(n){
-      try{ n = parseInt(n,10); }catch(e){ n = 0; }
-      if(isNaN(n)) n = 0;
-      const s = n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-      return "$ " + s;
-    }
-
-    function saveDraft(){
-      const payload = {
-        retirado: toInt(retiradoEl.value),
-        caja_final: toInt(cajaFinalEl.value),
-        mp: toInt(mpEl.value),
-        pya: toInt(pyaEl.value),
-        rappi: toInt(rappiEl.value)
-      };
-      try{
-        localStorage.setItem("caja_draft_"+sid, JSON.stringify(payload));
-      }catch(e){}
-    }
-
-    function loadDraft(){
-      try{
-        const raw = localStorage.getItem("caja_draft_"+sid);
-        if(!raw) return;
-        const p = JSON.parse(raw);
-        if(p && typeof p === "object"){
-          if(retiradoEl.value === "" || retiradoEl.value === "0") retiradoEl.value = p.retirado ?? retiradoEl.value;
-          if(cajaFinalEl.value === "" || cajaFinalEl.value === "0") cajaFinalEl.value = p.caja_final ?? cajaFinalEl.value;
-          if(mpEl.value === "" || mpEl.value === "0") mpEl.value = p.mp ?? mpEl.value;
-          if(pyaEl.value === "" || pyaEl.value === "0") pyaEl.value = p.pya ?? pyaEl.value;
-          if(rappiEl.value === "" || rappiEl.value === "0") rappiEl.value = p.rappi ?? rappiEl.value;
+    form.addEventListener("submit", (e) => {
+      const status = okStatusEl.value;
+      if (!status) {
+        alert("Seleccioná OK o NO OK.");
+        e.preventDefault();
+        return;
+      }
+      if (status === "NOOK") {
+        if (!endingRealEl.value) {
+          alert("Si es NO OK, cargá la caja final REAL.");
+          e.preventDefault();
+          return;
         }
-      }catch(e){}
-    }
-
-    function recalc(){
-      const retirado = toInt(retiradoEl.value);
-      const cajaFinal = toInt(cajaFinalEl.value);
-      const mp = toInt(mpEl.value);
-      const pya = toInt(pyaEl.value);
-      const rappi = toInt(rappiEl.value);
-
-      const efectivoBruto = retirado + cajaFinal;
-      const efectivoNeto = retirado - {{ s.opening_cash|int }};
-
-      const ingresoBruto = (efectivoBruto + mp + pya + rappi) + egresosTotal;
-      const ingresoNeto = ingresoBruto - egresosTotal; // pedido: neto = bruto - egresos
-
-      efBrutoLbl.textContent = fmtMoney(efectivoBruto);
-      efNetoLbl.textContent = fmtMoney(efectivoNeto);
-      ingresoBrutoLbl.textContent = fmtMoney(ingresoBruto);
-      ingresoNetoLbl.textContent = fmtMoney(ingresoNeto);
-      efDispLbl.textContent = fmtMoney(retirado);
-    }
-
-    [retiradoEl, cajaFinalEl, mpEl, pyaEl, rappiEl].forEach(el => {
-      el.addEventListener("input", () => { saveDraft(); recalc(); });
+        if (!noteEl.value.trim()) {
+          alert("Si es NO OK, completá la observación.");
+          e.preventDefault();
+          return;
+        }
+      }
     });
 
-    // Restore draft after page reload (ej: al agregar egresos)
-    loadDraft();
-    recalc();
-
-    // Submit: enviar valores actuales
-    document.getElementById("saveForm").addEventListener("submit", (e) => {
-      document.getElementById("h_sales_cash").value = toInt(retiradoEl.value);
-      document.getElementById("h_cash_final").value = toInt(cajaFinalEl.value);
-      document.getElementById("h_sales_mp").value = toInt(mpEl.value);
-      document.getElementById("h_sales_pya").value = toInt(pyaEl.value);
-      document.getElementById("h_sales_rappi").value = toInt(rappiEl.value);
-      // no borramos draft: por si vuelve atrás
-    });
+    updateUI();
   </script>
 
 {% endif %}
 
 </body>
-
 </html>
 """
 
@@ -2673,28 +2616,29 @@ EDIT_ALL_HTML = """
   </div>
 
   <div class="box">
-    
     <h3>Cierre</h3>
     <div class="row">
       <div>
-        <label>Retirado (Efectivo total)</label><br>
+        <label>Retirado</label><br>
         <input type="number" name="withdrawn" min="0" value="{{close.withdrawn_cash}}" required style="width:100%;">
       </div>
       <div>
-        <label>Caja final</label><br>
+        <label>Estado</label><br>
+        <select name="ok_status" required style="width:100%;">
+          <option value="OK" {% if close.close_ok==1 %}selected{% endif %}>OK</option>
+          <option value="NOOK" {% if close.close_ok==0 %}selected{% endif %}>NO OK</option>
+        </select>
+      </div>
+      <div>
+        <label>Caja final REAL</label><br>
         <input type="number" name="ending_real" min="0" value="{{close.ending_cash}}" required style="width:100%;">
       </div>
       <div>
-        <label class="muted">Estado</label><br>
-        <input type="text" value="OK" readonly style="width:100%;">
-      </div>
-      <div>
-        <label class="muted">Observación</label><br>
-        <input type="text" value="{{close.note or ''}}" readonly style="width:100%;">
+        <label>Observación</label><br>
+        <input type="text" name="note" value="{{close.note or ''}}" style="width:100%;">
       </div>
     </div>
-    <p class="muted">La diferencia se mantiene en 0 (sin validación OK/NO OK por ahora).</p>
-
+    <p class="muted">La diferencia se recalcula automáticamente.</p>
   </div>
 
   <div class="box">
@@ -2794,10 +2738,7 @@ def caja_index():
         if not s:
             continue
         if s.status == "CLOSED":
-            c = closes.get(s.id)
-            cash_final = int(getattr(c, 'ending_cash', 0) or 0) if c else 0
-            eg = expenses_total(s.id)
-            ventas_netas_map[s.id] = int(calc_ingreso_neto(s, egresos=eg, cash_final=cash_final))
+            ventas_netas_map[s.id] = int(calc_ingreso_neto(s))
             c = closes.get(s.id)
             efectivo_disp_map[s.id] = int(s.sales_cash or 0)
 
@@ -2919,9 +2860,8 @@ def shift(id):
     close_row = ShiftClose.query.filter_by(shift_id=id).first()
 
     egresos_total = expenses_total(id)
-    cash_final = int(getattr(close_row, 'ending_cash', 0) or 0) if close_row else 0
-    ingreso_bruto = calc_ingreso_bruto(s, egresos_total, cash_final=cash_final)
-    ingreso_neto = calc_ingreso_neto(s, egresos=egresos_total, cash_final=cash_final)
+    ingreso_neto = calc_ingreso_neto(s)
+    ingreso_bruto = calc_ingreso_bruto(s, egresos_total)
 
     efectivo_disponible = int(s.sales_cash or 0)
 
@@ -2983,7 +2923,6 @@ def expense(id):
     db.session.commit()
     return redirect(url_for("shift", id=id, d=d))
 
-
 @app.route("/caja/shift/<int:id>/close", methods=["POST"])
 @login_required
 def close_shift(id):
@@ -2992,36 +2931,34 @@ def close_shift(id):
     if s.status != "OPEN":
         return redirect(url_for("shift", id=id, d=d))
 
-    # Nuevo modelo:
-    # - Retirado (efectivo total): se carga manualmente -> lo guardamos en Shift.sales_cash
-    # - Caja final: se carga manualmente -> lo guardamos en ShiftClose.ending_cash
-    retirado = safe_int(request.form.get("sales_cash"))
-    caja_final = safe_int(request.form.get("cash_final"))
-
-    if retirado is None or retirado < 0:
-        return redirect(url_for("shift", id=id, d=d))
-    if caja_final is None or caja_final < 0:
+    withdrawn = safe_int(request.form.get("withdrawn"))
+    ok_status = (request.form.get("ok_status") or "").strip()
+    if withdrawn is None or ok_status not in ("OK", "NOOK"):
         return redirect(url_for("shift", id=id, d=d))
 
-    # Guardar ventas (mismos nombres para no romper import/export)
-    s.sales_cash = int(retirado)
-    s.sales_mp = to_int(request.form.get("sales_mp"))
-    s.sales_pya = to_int(request.form.get("sales_pya"))
-    s.sales_rappi = to_int(request.form.get("sales_rappi"))
+    ending_calc = calc_ending_calc(cash_bruto(s), withdrawn)
 
-    # Cierre (sin estado OK/NO OK por ahora)
-    ending_calc = calc_ending_calc(int(caja_final), int(retirado))
-    ending_real = int(caja_final)
-    difference = 0
+    if ok_status == "OK":
+        ending_real = ending_calc
+        note = None
+        close_ok = 1
+    else:
+        ending_real = safe_int(request.form.get("ending_real"))
+        note = (request.form.get("note") or "").strip()
+        close_ok = 0
+        if ending_real is None or not note:
+            return redirect(url_for("shift", id=id, d=d))
+
+    difference = int(ending_real) - int(ending_calc)
 
     c = ShiftClose(
         shift_id=id,
-        withdrawn_cash=int(retirado),
+        withdrawn_cash=int(withdrawn),
         ending_calc=int(ending_calc),
         ending_cash=int(ending_real),
         difference=int(difference),
-        note=None,
-        close_ok=1,
+        note=note or None,
+        close_ok=close_ok,
         edit_count=0
     )
     s.status = "CLOSED"
@@ -3029,9 +2966,6 @@ def close_shift(id):
     db.session.add(c)
     db.session.commit()
     return redirect(url_for("caja_index", d=d))
-
-
-
 
 @app.route("/caja/shift/<int:id>/edit_all", methods=["GET","POST"])
 @login_required
@@ -3112,16 +3046,26 @@ def edit_all(id):
         db.session.flush()
 
         withdrawn = safe_int(request.form.get("withdrawn"))
+        ok_status = (request.form.get("ok_status") or "").strip()
         ending_real = safe_int(request.form.get("ending_real"))
+        note = (request.form.get("note") or "").strip()
 
-        if withdrawn is None or withdrawn < 0 or ending_real is None or ending_real < 0:
+        if withdrawn is None or withdrawn < 0 or ok_status not in ("OK", "NOOK") or ending_real is None:
             return redirect(url_for("edit_all", id=id, d=d))
 
-        # Nuevo modelo: caja final se carga manualmente
-        ending_calc = calc_ending_calc(int(ending_real), int(withdrawn))
-        close_ok = 1
-        note_to_save = None
-        difference = 0
+        ending_calc = calc_ending_calc(cash_bruto(s), withdrawn)
+
+        if ok_status == "OK":
+            ending_real = ending_calc
+            note_to_save = None
+            close_ok = 1
+        else:
+            if not note:
+                return redirect(url_for("edit_all", id=id, d=d))
+            note_to_save = note
+            close_ok = 0
+
+        difference = int(ending_real) - int(ending_calc)
 
         close_row.withdrawn_cash = int(withdrawn)
         close_row.ending_calc = int(ending_calc)
@@ -3210,9 +3154,7 @@ def export_caja_json():
                 "turn": s.turn,
                 "responsible": s.responsible,
                 "opening_cash": int(s.opening_cash or 0),
-                "retirado": int(s.sales_cash or 0),
-            "cash_final": cash_final,
-            "sales_cash": int(cash_bruto(s, cash_final=cash_final)),
+                "sales_cash": int(s.sales_cash or 0),
                 "sales_mp": int(s.sales_mp or 0),
                 "sales_pya": int(getattr(s, "sales_pya", 0) or 0),
                 "sales_rappi": int(getattr(s, "sales_rappi", 0) or 0),
@@ -3431,7 +3373,7 @@ def import_caja():
                             db.session.add(CashExpense(shift_id=s.id, category=cat, amount=int(amt), note=note))
 
                     withdrawn = max(0, int(sales_cash) - int(opening_cash))
-                    ending_calc = calc_ending_calc(int(sales_cash) - int(withdrawn), withdrawn)
+                    ending_calc = calc_ending_calc(sales_cash, withdrawn)
                     ending_real = ending_calc
                     diff = 0
 
@@ -3615,7 +3557,7 @@ def import_caja_json():
                     if shift_status == "CLOSED":
                         if cdata:
                             withdrawn = int(cdata.get("withdrawn_cash") or 0)
-                            ending_calc = int(cdata.get("ending_calc") or calc_ending_calc(int(sales_cash) - int(withdrawn), withdrawn))
+                            ending_calc = int(cdata.get("ending_calc") or calc_ending_calc(sales_cash, withdrawn))
                             ending_real = int(cdata.get("ending_cash") or ending_calc)
                             diff = int(cdata.get("difference") or (ending_real - ending_calc))
                             close_ok = int(cdata.get("close_ok") or 1)
@@ -3636,7 +3578,7 @@ def import_caja_json():
                             ))
                         else:
                             withdrawn = max(0, int(sales_cash) - int(opening_cash))
-                            ending_calc = calc_ending_calc(int(sales_cash) - int(withdrawn), withdrawn)
+                            ending_calc = calc_ending_calc(sales_cash, withdrawn)
                             ending_real = ending_calc
                             db.session.add(ShiftClose(
                                 shift_id=new_shift.id,
