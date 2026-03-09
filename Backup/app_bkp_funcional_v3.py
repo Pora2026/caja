@@ -2099,22 +2099,8 @@ CAJA_INDEX_HTML = """
     .filters label{display:block; font-size:12px; color:#666;}
     .smallnote{font-size:12px; color:#666; margin-top:6px;}
     .holiday-bg{background:#ffe3ec;}
-    .holiday-bg table tr{background:#fff;}
-    .summary-table{table-layout:auto;}
-    .summary-table th,
-    .summary-table td{padding:6px 7px; font-size:12px;}
-    .summary-table th{
-      white-space:normal;
-      line-height:1.1;
-      text-align:center;
-      vertical-align:middle;
-    }
-    .summary-table td{
-      white-space:nowrap;
-      vertical-align:middle;
-    }
-    .summary-table td.wrapday{white-space:normal;}
-  </style>
+  .holiday-bg table tr{background:#fff;}
+</style>
 </head>
 <body class="{{ 'holiday-bg' if hday else '' }}">
 
@@ -2257,30 +2243,27 @@ CAJA_INDEX_HTML = """
   </div>
 </form>
 
-<table class="tight summary-table">
+<table class="tight">
   <tr>
     <th>Día</th>
     <th class="nowrap">Fecha</th>
     <th>Turno</th>
     <th>Responsable</th>
-    <th>Caja<br>Inicial</th>
-    <th>Efectivo<br>bruto</th>
-    <th>Ventas<br>Mercado Pago</th>
-    <th>Ventas<br>Pedidos Ya</th>
-    <th>Ventas<br>Rappi</th>
+    <th>Caja Inicial</th>
+    <th>Efectivo bruto</th>
+    <th>Ventas Mercado Pago</th>
+    <th>Ventas Pedidos Ya</th>
+    <th>Ventas Rappi</th>
     <th>Egresos</th>
-    <th>Ventas<br>totales</th>
-    <th class="net-soft">Ventas<br>netas</th>
-    <th class="net-soft">Ventas netas<br>del día</th>
+    <th>Ventas totales</th>
+    <th class="net-soft">Ventas netas</th>
     <th>Retirado</th>
-    <th>Caja Final<br>(Real)</th>
+    <th>Caja Final (Real)</th>
   </tr>
 
   {% for row in summary %}
     <tr>
-      {% if row.show_day %}
-        <td class="wrapday" rowspan="{{ row.day_rowspan }}"><b>{{ row.weekday }}</b></td>
-      {% endif %}
+      <td class="nowrap">{{ row.weekday }}</td>
       <td class="nowrap">{{ row.day }}</td>
       <td>{{ row.turn_name }}</td>
       <td>{{ row.responsible }}</td>
@@ -2292,16 +2275,13 @@ CAJA_INDEX_HTML = """
       <td>{{ row.expenses|money }}</td>
       <td>{{ row.ventas_bruto|money }}</td>
       <td class="net-soft"><b>{{ row.ventas_neto|money }}</b></td>
-      {% if row.show_day_total %}
-        <td class="net-soft" rowspan="{{ row.day_rowspan }}"><b>{{ row.day_total_neto|money }}</b></td>
-      {% endif %}
       <td>{{ row.withdrawn|money }}</td>
       <td>{{ row.ending_real|money }}</td>
     </tr>
   {% endfor %}
 
   {% if not summary %}
-    <tr><td colspan="15" class="muted">Sin cierres para el filtro seleccionado.</td></tr>
+    <tr><td colspan="14" class="muted">Sin cierres para el filtro seleccionado.</td></tr>
   {% endif %}
 </table>
 
@@ -2367,28 +2347,6 @@ SHIFT_HTML = """
     .good{color:#0f5132; font-weight:bold;}
     .holiday-bg{background:#ffe3ec;}
   .holiday-bg table tr{background:#fff;}
-  .delivery-actions{display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
-  .delivery-backdrop{display:none; position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:999;}
-  .delivery-modal{display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); width:min(960px, calc(100vw - 24px)); max-height:85vh; overflow:auto; background:#fff; border:1px solid #ccc; border-radius:18px; padding:18px; z-index:1000; box-shadow:0 18px 45px rgba(0,0,0,.22);}
-  .delivery-modal h3{margin:0 0 8px;}
-  .delivery-modal .head{display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px;}
-  .delivery-table{width:100%; border-collapse:collapse; table-layout:fixed;}
-  .delivery-table th,.delivery-table td{padding:10px 8px; border:1px solid #ddd; vertical-align:middle;}
-  .delivery-table th{text-align:left; background:#f3f3f3;}
-  .delivery-table .money-input-wrap{display:inline-flex; align-items:center; gap:6px; white-space:nowrap;}
-  .delivery-table .money-input-wrap input{width:84px; text-align:center; padding:8px 6px;}
-  .delivery-table .qty-input{width:72px; text-align:center; padding:8px 6px;}
-  .delivery-table .concept-col{width:24%;}
-  .delivery-table .rate-col{width:24%;}
-  .delivery-table .qty-col{width:22%;}
-  .delivery-table .tot-col{width:30%;}
-  .delivery-total-row td{font-weight:bold; background:#fafafa;}
-  .delivery-consumos-box{margin-top:12px; padding:12px; border:1px solid #ddd; border-radius:12px; background:#fafafa;}
-  .delivery-consumos-grid{display:grid; grid-template-columns:160px 1fr; gap:10px; align-items:center;}
-  .delivery-consumos-grid input{padding:8px 10px;}
-  .delivery-consumos-grid .money-input-wrap input{width:96px; text-align:center;}
-  .delivery-impact-box{margin-top:12px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;}
-  .delivery-impact-total{font-weight:bold; font-size:18px;}
 </style>
 </head>
 <body>
@@ -2453,102 +2411,14 @@ SHIFT_HTML = """
 
 <h3>Egresos (caja chica, efectivo)</h3>
 {% if s.status != 'CLOSED' %}
-<div class="delivery-actions">
-  <form method="post" action="{{ url_for('expense', id=s.id, d=d) }}" id="expenseForm">
-    <select name="category" id="expenseCategory">
-      {% for c in categories %}<option>{{c}}</option>{% endfor %}
-    </select>
-    <input type="number" name="amount" min="1" required id="expenseAmount">
-    <input name="note" placeholder="nota (obligatoria si Otros)" id="expenseNote">
-    <button class="btn">Agregar</button>
-  </form>
-
-  <button type="button" class="btn" id="openDeliveryCalcBtn">Cálculo para delivery</button>
-</div>
-
-<div class="delivery-backdrop" id="deliveryBackdrop"></div>
-<div class="delivery-modal" id="deliveryModal" aria-hidden="true">
-  <div class="head">
-    <div>
-      <h3>Calculadora pago delivery</h3>
-      <div class="muted">Los importes por pedido/hora vienen precargados, pero podés editarlos. La información se guarda automáticamente en este turno.</div>
-    </div>
-    <button type="button" class="btn" id="closeDeliveryCalcBtn">Cerrar</button>
-  </div>
-
-  <table class="delivery-table">
-    <tr>
-      <th class="concept-col">Concepto</th>
-      <th class="rate-col">$ por pedido/hora</th>
-      <th class="qty-col">Cantidad</th>
-      <th class="tot-col">Total</th>
-    </tr>
-    <tr>
-      <td rowspan="4" style="text-align:center;"><b>Pedidos</b></td>
-      <td>
-        <div class="money-input-wrap">$ <input type="number" class="del-rate" data-row="0" value="1500"></div>
-      </td>
-      <td><input type="number" class="del-qty qty-input" data-row="0" value="0" min="0"></td>
-      <td class="del-total" data-row="0">$ 0</td>
-    </tr>
-    <tr>
-      <td>
-        <div class="money-input-wrap">$ <input type="number" class="del-rate" data-row="1" value="2000"></div>
-      </td>
-      <td><input type="number" class="del-qty qty-input" data-row="1" value="0" min="0"></td>
-      <td class="del-total" data-row="1">$ 0</td>
-    </tr>
-    <tr>
-      <td>
-        <div class="money-input-wrap">$ <input type="number" class="del-rate" data-row="2" value="2500"></div>
-      </td>
-      <td><input type="number" class="del-qty qty-input" data-row="2" value="0" min="0"></td>
-      <td class="del-total" data-row="2">$ 0</td>
-    </tr>
-    <tr>
-      <td>
-        <div class="money-input-wrap">$ <input type="number" class="del-rate" data-row="3" value="3000"></div>
-      </td>
-      <td><input type="number" class="del-qty qty-input" data-row="3" value="0" min="0"></td>
-      <td class="del-total" data-row="3">$ 0</td>
-    </tr>
-    <tr>
-      <td style="text-align:center;"><b>Horas</b></td>
-      <td>
-        <div class="money-input-wrap">$ <input type="number" class="del-rate" data-row="4" value="2500"></div>
-      </td>
-      <td><input type="number" class="del-qty qty-input" data-row="4" value="0" min="0"></td>
-      <td class="del-total" data-row="4">$ 0</td>
-    </tr>
-    <tr class="delivery-total-row">
-      <td colspan="3" style="text-align:right;">Total viajes / horas</td>
-      <td id="deliveryGrandTotal">$ 0</td>
-    </tr>
-  </table>
-
-  <div class="delivery-consumos-box">
-    <div style="font-weight:bold; margin-bottom:8px;">Consumos</div>
-    <div class="delivery-consumos-grid">
-      <div>
-        <label class="muted" for="deliveryConsumeAmount">Monto</label><br>
-        <div class="money-input-wrap">$ <input type="number" id="deliveryConsumeAmount" min="0" value="0"></div>
-      </div>
-      <div>
-        <label class="muted" for="deliveryConsumeNote">Notas</label><br>
-        <input type="text" id="deliveryConsumeNote" placeholder="Ej: gaseosa, cena, peaje, etc.">
-      </div>
-    </div>
-    <div class="muted" style="margin-top:8px;">El monto de consumos se descuenta del total de viajes / horas.</div>
-  </div>
-
-  <div class="delivery-impact-box">
-    <div>
-      <div class="muted">Total a cargar como egreso Delivery / Cadete</div>
-      <div class="delivery-impact-total" id="deliveryNetTotal">$ 0</div>
-    </div>
-    <button type="button" class="btn" id="applyDeliveryExpenseBtn">Impactar en egresos</button>
-  </div>
-</div>
+<form method="post" action="{{ url_for('expense', id=s.id, d=d) }}">
+  <select name="category">
+    {% for c in categories %}<option>{{c}}</option>{% endfor %}
+  </select>
+  <input type="number" name="amount" min="1" required>
+  <input name="note" placeholder="nota (obligatoria si Otros)">
+  <button class="btn">Agregar</button>
+</form>
 {% else %}
 <p class="muted">Turno cerrado: no se pueden agregar egresos desde acá. Usá Editar (todo).</p>
 {% endif %}
@@ -2643,163 +2513,6 @@ SHIFT_HTML = """
       }catch(e){}
     }
 
-    const deliveryStorageKey = "delivery_calc_" + sid;
-    const deliveryModal = document.getElementById("deliveryModal");
-    const deliveryBackdrop = document.getElementById("deliveryBackdrop");
-    const openDeliveryCalcBtn = document.getElementById("openDeliveryCalcBtn");
-    const closeDeliveryCalcBtn = document.getElementById("closeDeliveryCalcBtn");
-    const deliveryRateEls = Array.from(document.querySelectorAll(".del-rate"));
-    const deliveryQtyEls = Array.from(document.querySelectorAll(".del-qty"));
-    const deliveryTotalEls = Array.from(document.querySelectorAll(".del-total"));
-    const deliveryGrandTotalEl = document.getElementById("deliveryGrandTotal");
-    const deliveryConsumeAmountEl = document.getElementById("deliveryConsumeAmount");
-    const deliveryConsumeNoteEl = document.getElementById("deliveryConsumeNote");
-    const deliveryNetTotalEl = document.getElementById("deliveryNetTotal");
-    const applyDeliveryExpenseBtn = document.getElementById("applyDeliveryExpenseBtn");
-    const expenseFormEl = document.getElementById("expenseForm");
-    const expenseCategoryEl = document.getElementById("expenseCategory");
-    const expenseAmountEl = document.getElementById("expenseAmount");
-    const expenseNoteEl = document.getElementById("expenseNote");
-
-    function getDeliveryDefaults(){
-      return {
-        rates: [1500, 2000, 2500, 3000, 2500],
-        qtys: [0, 0, 0, 0, 0],
-        consume_amount: 0,
-        consume_note: ""
-      };
-    }
-
-    function saveDeliveryCalc(){
-      try{
-        const payload = {
-          rates: deliveryRateEls.map(el => toInt(el.value)),
-          qtys: deliveryQtyEls.map(el => toInt(el.value)),
-          consume_amount: toInt(deliveryConsumeAmountEl ? deliveryConsumeAmountEl.value : 0),
-          consume_note: deliveryConsumeNoteEl ? (deliveryConsumeNoteEl.value || "") : ""
-        };
-        localStorage.setItem(deliveryStorageKey, JSON.stringify(payload));
-      }catch(e){}
-    }
-
-    function loadDeliveryCalc(){
-      const defaults = getDeliveryDefaults();
-      try{
-        const raw = localStorage.getItem(deliveryStorageKey);
-        if(!raw){
-          deliveryRateEls.forEach((el, i) => el.value = defaults.rates[i]);
-          deliveryQtyEls.forEach((el, i) => el.value = defaults.qtys[i]);
-          if(deliveryConsumeAmountEl) deliveryConsumeAmountEl.value = defaults.consume_amount;
-          if(deliveryConsumeNoteEl) deliveryConsumeNoteEl.value = defaults.consume_note;
-          return;
-        }
-        const payload = JSON.parse(raw) || {};
-        deliveryRateEls.forEach((el, i) => {
-          el.value = Array.isArray(payload.rates) && payload.rates[i] != null ? payload.rates[i] : defaults.rates[i];
-        });
-        deliveryQtyEls.forEach((el, i) => {
-          el.value = Array.isArray(payload.qtys) && payload.qtys[i] != null ? payload.qtys[i] : defaults.qtys[i];
-        });
-        if(deliveryConsumeAmountEl){
-          deliveryConsumeAmountEl.value = payload.consume_amount != null ? payload.consume_amount : defaults.consume_amount;
-        }
-        if(deliveryConsumeNoteEl){
-          deliveryConsumeNoteEl.value = payload.consume_note != null ? payload.consume_note : defaults.consume_note;
-        }
-      }catch(e){
-        deliveryRateEls.forEach((el, i) => el.value = defaults.rates[i]);
-        deliveryQtyEls.forEach((el, i) => el.value = defaults.qtys[i]);
-        if(deliveryConsumeAmountEl) deliveryConsumeAmountEl.value = defaults.consume_amount;
-        if(deliveryConsumeNoteEl) deliveryConsumeNoteEl.value = defaults.consume_note;
-      }
-    }
-
-    function recalcDeliveryCalc(){
-      let grand = 0;
-      deliveryRateEls.forEach((el, i) => {
-        const rate = toInt(el.value);
-        const qty = toInt(deliveryQtyEls[i].value);
-        const total = rate * qty;
-        grand += total;
-        if(deliveryTotalEls[i]){
-          deliveryTotalEls[i].textContent = fmtMoney(total);
-        }
-      });
-      const consumeAmount = toInt(deliveryConsumeAmountEl ? deliveryConsumeAmountEl.value : 0);
-      const net = Math.max(0, grand - consumeAmount);
-      if(deliveryGrandTotalEl){
-        deliveryGrandTotalEl.textContent = fmtMoney(grand);
-      }
-      if(deliveryNetTotalEl){
-        deliveryNetTotalEl.textContent = fmtMoney(net);
-      }
-    }
-
-    function openDeliveryCalc(){
-      if(deliveryModal) deliveryModal.style.display = "block";
-      if(deliveryBackdrop) deliveryBackdrop.style.display = "block";
-      document.body.style.overflow = "hidden";
-    }
-
-    function closeDeliveryCalc(){
-      if(deliveryModal) deliveryModal.style.display = "none";
-      if(deliveryBackdrop) deliveryBackdrop.style.display = "none";
-      document.body.style.overflow = "";
-    }
-
-    if(openDeliveryCalcBtn){
-      openDeliveryCalcBtn.addEventListener("click", openDeliveryCalc);
-    }
-    if(closeDeliveryCalcBtn){
-      closeDeliveryCalcBtn.addEventListener("click", closeDeliveryCalc);
-    }
-    if(deliveryBackdrop){
-      deliveryBackdrop.addEventListener("click", closeDeliveryCalc);
-    }
-    document.addEventListener("keydown", (ev) => {
-      if(ev.key === "Escape" && deliveryModal && deliveryModal.style.display === "block"){
-        closeDeliveryCalc();
-      }
-    });
-
-    [...deliveryRateEls, ...deliveryQtyEls, deliveryConsumeAmountEl, deliveryConsumeNoteEl].filter(Boolean).forEach(el => {
-      el.addEventListener("input", () => {
-        saveDeliveryCalc();
-        recalcDeliveryCalc();
-      });
-    });
-
-    if(applyDeliveryExpenseBtn){
-      applyDeliveryExpenseBtn.addEventListener("click", () => {
-        const grand = deliveryRateEls.reduce((acc, el, i) => acc + (toInt(el.value) * toInt(deliveryQtyEls[i].value)), 0);
-        const consumeAmount = toInt(deliveryConsumeAmountEl ? deliveryConsumeAmountEl.value : 0);
-        const net = Math.max(0, grand - consumeAmount);
-        const consumeNote = deliveryConsumeNoteEl ? (deliveryConsumeNoteEl.value || "").trim() : "";
-
-        if(!expenseFormEl || !expenseCategoryEl || !expenseAmountEl || net <= 0){
-          alert("El total a cargar debe ser mayor a 0.");
-          return;
-        }
-
-        expenseCategoryEl.value = "Delivery / Cadete (efectivo)";
-        expenseAmountEl.value = net;
-
-        if(expenseNoteEl){
-          let note = "Calculadora delivery";
-          if(consumeAmount > 0){
-            note += " - consumo descontado: " + fmtMoney(consumeAmount);
-          }
-          if(consumeNote){
-            note += " - " + consumeNote;
-          }
-          expenseNoteEl.value = note;
-        }
-
-        saveDeliveryCalc();
-        expenseFormEl.submit();
-      });
-    }
-
     function loadDraft(){
       try{
         const raw = localStorage.getItem("caja_draft_"+sid);
@@ -2840,8 +2553,6 @@ SHIFT_HTML = """
     });
 
     // Restore draft after page reload (ej: al agregar egresos)
-    loadDeliveryCalc();
-    recalcDeliveryCalc();
     loadDraft();
     recalc();
 
@@ -3120,29 +2831,6 @@ def caja_index():
         turn=turn,
         responsible=resp
     )
-
-    # Agrupar visualmente por fecha en "Resumen de cierres"
-    grouped_summary = []
-    i = 0
-    while i < len(summary):
-        day_key = summary[i]["day"]
-        j = i
-        day_total_neto = 0
-        while j < len(summary) and summary[j]["day"] == day_key:
-            day_total_neto += int(summary[j].get("ventas_neto", 0) or 0)
-            j += 1
-
-        rowspan = j - i
-        for k in range(i, j):
-            row = dict(summary[k])
-            row["day_rowspan"] = rowspan
-            row["show_day"] = (k == i)
-            row["show_day_total"] = (k == i)
-            row["day_total_neto"] = day_total_neto
-            grouped_summary.append(row)
-        i = j
-
-    summary = grouped_summary
 
     weekday_name = weekday_es(day_obj)
 
@@ -3495,16 +3183,14 @@ def export_excel():
 @login_required
 def export_caja_json():
     # Backup JSON de Caja: shifts + expenses + close
-    start_raw = request.args.get("start")
-    end_raw = request.args.get("end")
-    start_date, end_date = parse_range_params(start_raw, end_raw)
+    start_date, end_date = parse_range_params(request.args.get("start"), request.args.get("end"))
 
     shifts = Shift.query.order_by(Shift.day.asc(), Shift.turn.asc()).all()
     expenses = CashExpense.query.order_by(CashExpense.created_at.asc()).all()
     closes = ShiftClose.query.order_by(ShiftClose.created_at.asc()).all()
 
     # si mandan start/end por query, filtramos (por day del shift)
-    if start_raw or end_raw:
+    if start_date and end_date:
         shift_ids_in_range = [
             s.id for s in shifts
             if (s.day >= start_date and s.day <= end_date)
@@ -3513,70 +3199,57 @@ def export_caja_json():
         expenses = [e for e in expenses if e.shift_id in shift_ids_in_range]
         closes = [c for c in closes if c.shift_id in shift_ids_in_range]
 
-    shift_lookup = {s.id: s for s in shifts}
-    close_lookup = {c.shift_id: c for c in closes}
-
-    shifts_payload = []
-    for s in shifts:
-        c = close_lookup.get(s.id)
-        cash_final = int(c.ending_cash or 0) if c else 0
-        shifts_payload.append({
-            "day": s.day.isoformat(),
-            "turn": s.turn,
-            "responsible": s.responsible,
-            "opening_cash": int(s.opening_cash or 0),
-            "retirado": int(s.sales_cash or 0),
-            "cash_final": cash_final,
-            "sales_cash": int(cash_bruto(s, cash_final=cash_final)),
-            "sales_mp": int(s.sales_mp or 0),
-            "sales_pya": int(getattr(s, "sales_pya", 0) or 0),
-            "sales_rappi": int(getattr(s, "sales_rappi", 0) or 0),
-            "status": s.status,
-            "closed_at": s.closed_at.isoformat() if s.closed_at else None,
-        })
-
-    expenses_payload = []
-    for e in expenses:
-        sh = shift_lookup.get(e.shift_id)
-        expenses_payload.append({
-            "shift_day": sh.day.isoformat() if sh else None,
-            "shift_turn": sh.turn if sh else None,
-            "category": e.category,
-            "amount": int(e.amount or 0),
-            "note": e.note,
-            "created_at": e.created_at.isoformat() if e.created_at else None,
-        })
-
-    closes_payload = []
-    for c in closes:
-        sh = shift_lookup.get(c.shift_id)
-        closes_payload.append({
-            "shift_day": sh.day.isoformat() if sh else None,
-            "shift_turn": sh.turn if sh else None,
-            "withdrawn_cash": int(c.withdrawn_cash or 0),
-            "ending_calc": int(c.ending_calc or 0),
-            "ending_cash": int(c.ending_cash or 0),
-            "difference": int(c.difference or 0),
-            "note": c.note,
-            "close_ok": int(c.close_ok or 1),
-            "created_at": c.created_at.isoformat() if c.created_at else None,
-            "edited_by": c.edited_by,
-            "edited_at": c.edited_at.isoformat() if c.edited_at else None,
-            "edit_reason": c.edit_reason,
-            "edit_count": int(c.edit_count or 0),
-        })
-
     payload = {
         "type": "caja_backup",
         "version": 1,
         "exported_at": datetime.utcnow().isoformat(),
-        "range": {
-            "start": start_date.isoformat() if (start_raw or end_raw) else None,
-            "end": end_date.isoformat() if (start_raw or end_raw) else None
-        },
-        "shifts": shifts_payload,
-        "expenses": expenses_payload,
-        "closes": closes_payload,
+        "range": {"start": start_date.isoformat(), "end": end_date.isoformat()},
+        "shifts": [
+            {
+                "day": s.day.isoformat(),
+                "turn": s.turn,
+                "responsible": s.responsible,
+                "opening_cash": int(s.opening_cash or 0),
+                "retirado": int(s.sales_cash or 0),
+            "cash_final": cash_final,
+            "sales_cash": int(cash_bruto(s, cash_final=cash_final)),
+                "sales_mp": int(s.sales_mp or 0),
+                "sales_pya": int(getattr(s, "sales_pya", 0) or 0),
+                "sales_rappi": int(getattr(s, "sales_rappi", 0) or 0),
+                "status": s.status,
+                "closed_at": s.closed_at.isoformat() if s.closed_at else None,
+            }
+            for s in shifts
+        ],
+        "expenses": [
+            {
+                "shift_day": Shift.query.get(e.shift_id).day.isoformat() if Shift.query.get(e.shift_id) else None,
+                "shift_turn": Shift.query.get(e.shift_id).turn if Shift.query.get(e.shift_id) else None,
+                "category": e.category,
+                "amount": int(e.amount or 0),
+                "note": e.note,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+            }
+            for e in expenses
+        ],
+        "closes": [
+            {
+                "shift_day": Shift.query.get(c.shift_id).day.isoformat() if Shift.query.get(c.shift_id) else None,
+                "shift_turn": Shift.query.get(c.shift_id).turn if Shift.query.get(c.shift_id) else None,
+                "withdrawn_cash": int(c.withdrawn_cash or 0),
+                "ending_calc": int(c.ending_calc or 0),
+                "ending_cash": int(c.ending_cash or 0),
+                "difference": int(c.difference or 0),
+                "note": c.note,
+                "close_ok": int(c.close_ok or 1),
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+                "edited_by": c.edited_by,
+                "edited_at": c.edited_at.isoformat() if c.edited_at else None,
+                "edit_reason": c.edit_reason,
+                "edit_count": int(c.edit_count or 0),
+            }
+            for c in closes
+        ],
     }
 
     bio = BytesIO()

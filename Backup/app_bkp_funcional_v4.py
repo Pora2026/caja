@@ -2367,28 +2367,6 @@ SHIFT_HTML = """
     .good{color:#0f5132; font-weight:bold;}
     .holiday-bg{background:#ffe3ec;}
   .holiday-bg table tr{background:#fff;}
-  .delivery-actions{display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
-  .delivery-backdrop{display:none; position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:999;}
-  .delivery-modal{display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); width:min(960px, calc(100vw - 24px)); max-height:85vh; overflow:auto; background:#fff; border:1px solid #ccc; border-radius:18px; padding:18px; z-index:1000; box-shadow:0 18px 45px rgba(0,0,0,.22);}
-  .delivery-modal h3{margin:0 0 8px;}
-  .delivery-modal .head{display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px;}
-  .delivery-table{width:100%; border-collapse:collapse; table-layout:fixed;}
-  .delivery-table th,.delivery-table td{padding:10px 8px; border:1px solid #ddd; vertical-align:middle;}
-  .delivery-table th{text-align:left; background:#f3f3f3;}
-  .delivery-table .money-input-wrap{display:inline-flex; align-items:center; gap:6px; white-space:nowrap;}
-  .delivery-table .money-input-wrap input{width:84px; text-align:center; padding:8px 6px;}
-  .delivery-table .qty-input{width:72px; text-align:center; padding:8px 6px;}
-  .delivery-table .concept-col{width:24%;}
-  .delivery-table .rate-col{width:24%;}
-  .delivery-table .qty-col{width:22%;}
-  .delivery-table .tot-col{width:30%;}
-  .delivery-total-row td{font-weight:bold; background:#fafafa;}
-  .delivery-consumos-box{margin-top:12px; padding:12px; border:1px solid #ddd; border-radius:12px; background:#fafafa;}
-  .delivery-consumos-grid{display:grid; grid-template-columns:160px 1fr; gap:10px; align-items:center;}
-  .delivery-consumos-grid input{padding:8px 10px;}
-  .delivery-consumos-grid .money-input-wrap input{width:96px; text-align:center;}
-  .delivery-impact-box{margin-top:12px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;}
-  .delivery-impact-total{font-weight:bold; font-size:18px;}
 </style>
 </head>
 <body>
@@ -2453,102 +2431,14 @@ SHIFT_HTML = """
 
 <h3>Egresos (caja chica, efectivo)</h3>
 {% if s.status != 'CLOSED' %}
-<div class="delivery-actions">
-  <form method="post" action="{{ url_for('expense', id=s.id, d=d) }}" id="expenseForm">
-    <select name="category" id="expenseCategory">
-      {% for c in categories %}<option>{{c}}</option>{% endfor %}
-    </select>
-    <input type="number" name="amount" min="1" required id="expenseAmount">
-    <input name="note" placeholder="nota (obligatoria si Otros)" id="expenseNote">
-    <button class="btn">Agregar</button>
-  </form>
-
-  <button type="button" class="btn" id="openDeliveryCalcBtn">Cálculo para delivery</button>
-</div>
-
-<div class="delivery-backdrop" id="deliveryBackdrop"></div>
-<div class="delivery-modal" id="deliveryModal" aria-hidden="true">
-  <div class="head">
-    <div>
-      <h3>Calculadora pago delivery</h3>
-      <div class="muted">Los importes por pedido/hora vienen precargados, pero podés editarlos. La información se guarda automáticamente en este turno.</div>
-    </div>
-    <button type="button" class="btn" id="closeDeliveryCalcBtn">Cerrar</button>
-  </div>
-
-  <table class="delivery-table">
-    <tr>
-      <th class="concept-col">Concepto</th>
-      <th class="rate-col">$ por pedido/hora</th>
-      <th class="qty-col">Cantidad</th>
-      <th class="tot-col">Total</th>
-    </tr>
-    <tr>
-      <td rowspan="4" style="text-align:center;"><b>Pedidos</b></td>
-      <td>
-        <div class="money-input-wrap">$ <input type="number" class="del-rate" data-row="0" value="1500"></div>
-      </td>
-      <td><input type="number" class="del-qty qty-input" data-row="0" value="0" min="0"></td>
-      <td class="del-total" data-row="0">$ 0</td>
-    </tr>
-    <tr>
-      <td>
-        <div class="money-input-wrap">$ <input type="number" class="del-rate" data-row="1" value="2000"></div>
-      </td>
-      <td><input type="number" class="del-qty qty-input" data-row="1" value="0" min="0"></td>
-      <td class="del-total" data-row="1">$ 0</td>
-    </tr>
-    <tr>
-      <td>
-        <div class="money-input-wrap">$ <input type="number" class="del-rate" data-row="2" value="2500"></div>
-      </td>
-      <td><input type="number" class="del-qty qty-input" data-row="2" value="0" min="0"></td>
-      <td class="del-total" data-row="2">$ 0</td>
-    </tr>
-    <tr>
-      <td>
-        <div class="money-input-wrap">$ <input type="number" class="del-rate" data-row="3" value="3000"></div>
-      </td>
-      <td><input type="number" class="del-qty qty-input" data-row="3" value="0" min="0"></td>
-      <td class="del-total" data-row="3">$ 0</td>
-    </tr>
-    <tr>
-      <td style="text-align:center;"><b>Horas</b></td>
-      <td>
-        <div class="money-input-wrap">$ <input type="number" class="del-rate" data-row="4" value="2500"></div>
-      </td>
-      <td><input type="number" class="del-qty qty-input" data-row="4" value="0" min="0"></td>
-      <td class="del-total" data-row="4">$ 0</td>
-    </tr>
-    <tr class="delivery-total-row">
-      <td colspan="3" style="text-align:right;">Total viajes / horas</td>
-      <td id="deliveryGrandTotal">$ 0</td>
-    </tr>
-  </table>
-
-  <div class="delivery-consumos-box">
-    <div style="font-weight:bold; margin-bottom:8px;">Consumos</div>
-    <div class="delivery-consumos-grid">
-      <div>
-        <label class="muted" for="deliveryConsumeAmount">Monto</label><br>
-        <div class="money-input-wrap">$ <input type="number" id="deliveryConsumeAmount" min="0" value="0"></div>
-      </div>
-      <div>
-        <label class="muted" for="deliveryConsumeNote">Notas</label><br>
-        <input type="text" id="deliveryConsumeNote" placeholder="Ej: gaseosa, cena, peaje, etc.">
-      </div>
-    </div>
-    <div class="muted" style="margin-top:8px;">El monto de consumos se descuenta del total de viajes / horas.</div>
-  </div>
-
-  <div class="delivery-impact-box">
-    <div>
-      <div class="muted">Total a cargar como egreso Delivery / Cadete</div>
-      <div class="delivery-impact-total" id="deliveryNetTotal">$ 0</div>
-    </div>
-    <button type="button" class="btn" id="applyDeliveryExpenseBtn">Impactar en egresos</button>
-  </div>
-</div>
+<form method="post" action="{{ url_for('expense', id=s.id, d=d) }}">
+  <select name="category">
+    {% for c in categories %}<option>{{c}}</option>{% endfor %}
+  </select>
+  <input type="number" name="amount" min="1" required>
+  <input name="note" placeholder="nota (obligatoria si Otros)">
+  <button class="btn">Agregar</button>
+</form>
 {% else %}
 <p class="muted">Turno cerrado: no se pueden agregar egresos desde acá. Usá Editar (todo).</p>
 {% endif %}
@@ -2643,163 +2533,6 @@ SHIFT_HTML = """
       }catch(e){}
     }
 
-    const deliveryStorageKey = "delivery_calc_" + sid;
-    const deliveryModal = document.getElementById("deliveryModal");
-    const deliveryBackdrop = document.getElementById("deliveryBackdrop");
-    const openDeliveryCalcBtn = document.getElementById("openDeliveryCalcBtn");
-    const closeDeliveryCalcBtn = document.getElementById("closeDeliveryCalcBtn");
-    const deliveryRateEls = Array.from(document.querySelectorAll(".del-rate"));
-    const deliveryQtyEls = Array.from(document.querySelectorAll(".del-qty"));
-    const deliveryTotalEls = Array.from(document.querySelectorAll(".del-total"));
-    const deliveryGrandTotalEl = document.getElementById("deliveryGrandTotal");
-    const deliveryConsumeAmountEl = document.getElementById("deliveryConsumeAmount");
-    const deliveryConsumeNoteEl = document.getElementById("deliveryConsumeNote");
-    const deliveryNetTotalEl = document.getElementById("deliveryNetTotal");
-    const applyDeliveryExpenseBtn = document.getElementById("applyDeliveryExpenseBtn");
-    const expenseFormEl = document.getElementById("expenseForm");
-    const expenseCategoryEl = document.getElementById("expenseCategory");
-    const expenseAmountEl = document.getElementById("expenseAmount");
-    const expenseNoteEl = document.getElementById("expenseNote");
-
-    function getDeliveryDefaults(){
-      return {
-        rates: [1500, 2000, 2500, 3000, 2500],
-        qtys: [0, 0, 0, 0, 0],
-        consume_amount: 0,
-        consume_note: ""
-      };
-    }
-
-    function saveDeliveryCalc(){
-      try{
-        const payload = {
-          rates: deliveryRateEls.map(el => toInt(el.value)),
-          qtys: deliveryQtyEls.map(el => toInt(el.value)),
-          consume_amount: toInt(deliveryConsumeAmountEl ? deliveryConsumeAmountEl.value : 0),
-          consume_note: deliveryConsumeNoteEl ? (deliveryConsumeNoteEl.value || "") : ""
-        };
-        localStorage.setItem(deliveryStorageKey, JSON.stringify(payload));
-      }catch(e){}
-    }
-
-    function loadDeliveryCalc(){
-      const defaults = getDeliveryDefaults();
-      try{
-        const raw = localStorage.getItem(deliveryStorageKey);
-        if(!raw){
-          deliveryRateEls.forEach((el, i) => el.value = defaults.rates[i]);
-          deliveryQtyEls.forEach((el, i) => el.value = defaults.qtys[i]);
-          if(deliveryConsumeAmountEl) deliveryConsumeAmountEl.value = defaults.consume_amount;
-          if(deliveryConsumeNoteEl) deliveryConsumeNoteEl.value = defaults.consume_note;
-          return;
-        }
-        const payload = JSON.parse(raw) || {};
-        deliveryRateEls.forEach((el, i) => {
-          el.value = Array.isArray(payload.rates) && payload.rates[i] != null ? payload.rates[i] : defaults.rates[i];
-        });
-        deliveryQtyEls.forEach((el, i) => {
-          el.value = Array.isArray(payload.qtys) && payload.qtys[i] != null ? payload.qtys[i] : defaults.qtys[i];
-        });
-        if(deliveryConsumeAmountEl){
-          deliveryConsumeAmountEl.value = payload.consume_amount != null ? payload.consume_amount : defaults.consume_amount;
-        }
-        if(deliveryConsumeNoteEl){
-          deliveryConsumeNoteEl.value = payload.consume_note != null ? payload.consume_note : defaults.consume_note;
-        }
-      }catch(e){
-        deliveryRateEls.forEach((el, i) => el.value = defaults.rates[i]);
-        deliveryQtyEls.forEach((el, i) => el.value = defaults.qtys[i]);
-        if(deliveryConsumeAmountEl) deliveryConsumeAmountEl.value = defaults.consume_amount;
-        if(deliveryConsumeNoteEl) deliveryConsumeNoteEl.value = defaults.consume_note;
-      }
-    }
-
-    function recalcDeliveryCalc(){
-      let grand = 0;
-      deliveryRateEls.forEach((el, i) => {
-        const rate = toInt(el.value);
-        const qty = toInt(deliveryQtyEls[i].value);
-        const total = rate * qty;
-        grand += total;
-        if(deliveryTotalEls[i]){
-          deliveryTotalEls[i].textContent = fmtMoney(total);
-        }
-      });
-      const consumeAmount = toInt(deliveryConsumeAmountEl ? deliveryConsumeAmountEl.value : 0);
-      const net = Math.max(0, grand - consumeAmount);
-      if(deliveryGrandTotalEl){
-        deliveryGrandTotalEl.textContent = fmtMoney(grand);
-      }
-      if(deliveryNetTotalEl){
-        deliveryNetTotalEl.textContent = fmtMoney(net);
-      }
-    }
-
-    function openDeliveryCalc(){
-      if(deliveryModal) deliveryModal.style.display = "block";
-      if(deliveryBackdrop) deliveryBackdrop.style.display = "block";
-      document.body.style.overflow = "hidden";
-    }
-
-    function closeDeliveryCalc(){
-      if(deliveryModal) deliveryModal.style.display = "none";
-      if(deliveryBackdrop) deliveryBackdrop.style.display = "none";
-      document.body.style.overflow = "";
-    }
-
-    if(openDeliveryCalcBtn){
-      openDeliveryCalcBtn.addEventListener("click", openDeliveryCalc);
-    }
-    if(closeDeliveryCalcBtn){
-      closeDeliveryCalcBtn.addEventListener("click", closeDeliveryCalc);
-    }
-    if(deliveryBackdrop){
-      deliveryBackdrop.addEventListener("click", closeDeliveryCalc);
-    }
-    document.addEventListener("keydown", (ev) => {
-      if(ev.key === "Escape" && deliveryModal && deliveryModal.style.display === "block"){
-        closeDeliveryCalc();
-      }
-    });
-
-    [...deliveryRateEls, ...deliveryQtyEls, deliveryConsumeAmountEl, deliveryConsumeNoteEl].filter(Boolean).forEach(el => {
-      el.addEventListener("input", () => {
-        saveDeliveryCalc();
-        recalcDeliveryCalc();
-      });
-    });
-
-    if(applyDeliveryExpenseBtn){
-      applyDeliveryExpenseBtn.addEventListener("click", () => {
-        const grand = deliveryRateEls.reduce((acc, el, i) => acc + (toInt(el.value) * toInt(deliveryQtyEls[i].value)), 0);
-        const consumeAmount = toInt(deliveryConsumeAmountEl ? deliveryConsumeAmountEl.value : 0);
-        const net = Math.max(0, grand - consumeAmount);
-        const consumeNote = deliveryConsumeNoteEl ? (deliveryConsumeNoteEl.value || "").trim() : "";
-
-        if(!expenseFormEl || !expenseCategoryEl || !expenseAmountEl || net <= 0){
-          alert("El total a cargar debe ser mayor a 0.");
-          return;
-        }
-
-        expenseCategoryEl.value = "Delivery / Cadete (efectivo)";
-        expenseAmountEl.value = net;
-
-        if(expenseNoteEl){
-          let note = "Calculadora delivery";
-          if(consumeAmount > 0){
-            note += " - consumo descontado: " + fmtMoney(consumeAmount);
-          }
-          if(consumeNote){
-            note += " - " + consumeNote;
-          }
-          expenseNoteEl.value = note;
-        }
-
-        saveDeliveryCalc();
-        expenseFormEl.submit();
-      });
-    }
-
     function loadDraft(){
       try{
         const raw = localStorage.getItem("caja_draft_"+sid);
@@ -2840,8 +2573,6 @@ SHIFT_HTML = """
     });
 
     // Restore draft after page reload (ej: al agregar egresos)
-    loadDeliveryCalc();
-    recalcDeliveryCalc();
     loadDraft();
     recalc();
 
