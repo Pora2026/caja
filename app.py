@@ -38,7 +38,7 @@ app = Flask(
     static_folder=STATIC_DIR,
     static_url_path="/static"
 )
-# ✅ favicon (evita error al pedir /favicon.ico)
+#  favicon (evita error al pedir /favicon.ico)
 @app.route("/favicon.ico")
 def favicon():
     return send_from_directory(os.path.join(app.static_folder, "img"), "favicon.ico")
@@ -57,7 +57,7 @@ if db_url:
     if db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql://", 1)
 
-    # 🔐 Si es SQLite, convertir a ruta absoluta segura
+    #  Si es SQLite, convertir a ruta absoluta segura
     if db_url.lower().startswith("sqlite:///"):
         rel_path = db_url.replace("sqlite:///", "", 1)
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -96,7 +96,7 @@ else:
 
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# ✅ Forzar schema por defecto en Postgres (evita "no schema selected")
+#  Forzar schema por defecto en Postgres (evita "no schema selected")
 uri = (app.config.get("SQLALCHEMY_DATABASE_URI") or "").lower()
 if uri.startswith("postgresql://"):
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
@@ -109,10 +109,10 @@ db = SQLAlchemy(app)
 # ==============================
 # CONFIG
 # ==============================
-TURNS = [("MORNING", "Mañana"), ("AFTERNOON", "Tarde")]
+TURNS = [("MORNING", "Manana"), ("AFTERNOON", "Tarde")]
 TURN_NAMES = dict(TURNS)
 
-WEEKDAYS_ES = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"]
+WEEKDAYS_ES = ["Lunes","Martes","Miercoles","Jueves","Viernes","Sabado","Domingo"]
 
 def weekday_es(d: date) -> str:
     try:
@@ -128,12 +128,12 @@ CATEGORIES = [
     "Otros (requiere nota)",
 ]
 
-EMPLOYEES = ["Paula", "Pato", "Lautaro", "Sofía", "Matías"]
+EMPLOYEES = ["Paula", "Pato", "Lautaro", "Sofia", "Matias"]
 ADMINS = ["Bernardo", "Ximena"]
 
 MAX_CONSUMOS = 5
 
-# Asistencia – jornada fija y grupos
+# Asistencia - jornada fija y grupos
 JORNADA_MIN = 9 * 60 + 10  # 09:10 => 550 min
 
 GROUP_A = {
@@ -149,9 +149,9 @@ GROUP_B = {
     "afternoon_out": "21:00",
 }
 
-# Límites mensuales (pagos)
+# Limites mensuales (pagos)
 RP_LIMIT_MIN_PER_MONTH = 120                 # 2hs por mes (minutos)
-SICK_LIMIT_MIN_PER_MONTH = 2 * JORNADA_MIN   # 2 días por mes (minutos)
+SICK_LIMIT_MIN_PER_MONTH = 2 * JORNADA_MIN   # 2 dias por mes (minutos)
 
 NOVELTY_ITEMS = [
     "",  # normal
@@ -175,8 +175,8 @@ class User(db.Model):
     role = db.Column(db.String(10), default="user")  # admin / user
     is_active = db.Column(db.Integer, default=1)
 
-    # ===== Mobile PIN (PORÁ Mobile) =====
-    # Guardamos hash (para validar) + fingerprint determinístico (para buscar y garantizar unicidad).
+    # ===== Mobile PIN (PORA Mobile) =====
+    # Guardamos hash (para validar) + fingerprint deterministico (para buscar y garantizar unicidad).
     mobile_pin_hash = db.Column(db.String(255), nullable=True)
     mobile_pin_fingerprint = db.Column(db.String(64), unique=True, nullable=True)
     mobile_pin_attempts = db.Column(db.Integer, default=0)
@@ -191,7 +191,7 @@ class Shift(db.Model):
 
     opening_cash = db.Column(db.Integer, nullable=False)
 
-    sales_cash = db.Column(db.Integer, default=0)   # en tu operación: efectivo NETO (ya descontó gastos)
+    sales_cash = db.Column(db.Integer, default=0)   # en tu operacion: efectivo NETO (ya desconto gastos)
     sales_mp = db.Column(db.Integer, default=0)
     sales_pya = db.Column(db.Integer, default=0)
     sales_rappi = db.Column(db.Integer, default=0)
@@ -378,7 +378,7 @@ def _is_postgres():
 
 def seed_users():
     """
-    Seed idempotente (no rompe si corre más de una vez).
+    Seed idempotente (no rompe si corre mas de una vez).
     En Gunicorn con 1 worker no hay drama, pero esto lo deja robusto.
     """
     try:
@@ -422,7 +422,7 @@ def current_user():
 
 def sync_advance_to_attendance(ar) -> None:
     """Al aprobar un adelanto, lo refleja como consumo en Asistencia (como se carga manualmente).
-    - Día: requested_for_date
+    - Dia: requested_for_date
     - Empleado: username del solicitante
     - Item: 'adelanto'
     - Amount: amount_requested
@@ -437,14 +437,14 @@ def sync_advance_to_attendance(ar) -> None:
         row = Attendance(day=day_obj, employee=emp, mode="AUTO")
         db.session.add(row)
         db.session.flush()
-    # Buscar próximo idx disponible
+    # Buscar proximo idx disponible
     cons = AttendanceConsumption.query.filter_by(attendance_id=row.id).order_by(AttendanceConsumption.idx.asc()).all()
     used = {c.idx for c in cons}
     idx = 1
     while idx in used and idx <= MAX_CONSUMOS:
         idx += 1
     if idx > MAX_CONSUMOS:
-        # si está lleno, sobreescribimos el último
+        # si esta lleno, sobreescribimos el ultimo
         AttendanceConsumption.query.filter_by(attendance_id=row.id, idx=MAX_CONSUMOS).delete()
         idx = MAX_CONSUMOS
     db.session.add(AttendanceConsumption(attendance_id=row.id, idx=idx, item="adelanto", amount=int(ar.amount_requested or 0)))
@@ -469,7 +469,7 @@ def admin_required(fn):
 
 
 # ==============================
-# PORÁ Mobile (PIN)
+# PORA Mobile (PIN)
 # ==============================
 
 MOBILE_SESSION_KEY = "m_user_id"
@@ -487,7 +487,7 @@ def mobile_login_required(fn):
     return wrapper
 
 def _pin_fingerprint(pin: str) -> str:
-    # Fingerprint determinístico (para búsqueda y unicidad) usando SECRET_KEY como "pepper".
+    # Fingerprint deterministico (para busqueda y unicidad) usando SECRET_KEY como "pepper".
     # NO guarda el PIN en claro.
     secret = (app.config.get("SECRET_KEY") or "").encode("utf-8")
     p = (pin or "").strip().encode("utf-8")
@@ -496,12 +496,12 @@ def _pin_fingerprint(pin: str) -> str:
 def set_mobile_pin(user: User, pin: str):
     pin = (pin or "").strip()
     if not (pin.isdigit() and len(pin) == 4):
-        raise ValueError("El PIN debe tener 4 dígitos.")
+        raise ValueError("El PIN debe tener 4 digitos.")
     fp = _pin_fingerprint(pin)
     # Unicidad (no permitir duplicados)
     exists = User.query.filter(User.mobile_pin_fingerprint == fp, User.id != user.id).first()
     if exists:
-        raise ValueError("PIN en uso. Probá otra combinación.")
+        raise ValueError("PIN en uso. Proba otra combinacion.")
     user.mobile_pin_hash = generate_password_hash(pin)
     user.mobile_pin_fingerprint = fp
     user.mobile_pin_attempts = 0
@@ -591,7 +591,7 @@ def weekday_es(value) -> str:
             s = str(value).strip()
             s = s[:10]
             d = _dt.datetime.strptime(s, "%Y-%m-%d").date()
-        names = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"]
+        names = ["Lunes","Martes","Miercoles","Jueves","Viernes","Sabado","Domingo"]
         return names[d.weekday()]
     except Exception:
         return ""
@@ -654,8 +654,8 @@ def fmt_minutes(m):
 def emp_key(name: str) -> str:
     return (
         name.lower()
-        .replace("á","a").replace("é","e").replace("í","i")
-        .replace("ó","o").replace("ú","u")
+        .replace("a","a").replace("e","e").replace("i","i")
+        .replace("o","o").replace("u","u")
         .replace(" ", "_")
     )
 import re
@@ -744,7 +744,7 @@ def expenses_total(shift_id: int) -> int:
 
 def cash_final_value(s: Shift) -> int:
     """Caja final (efectivo que queda en la caja) guardada en el cierre.
-    - Para turnos OPEN (aún sin cierre), devuelve 0.
+    - Para turnos OPEN (aun sin cierre), devuelve 0.
     """
     try:
         sid = getattr(s, "id", None)
@@ -792,8 +792,8 @@ def calc_ingreso_neto(s: Shift, egresos: Optional[int] = None, cash_final: Optio
 
 def calc_ending_calc(cash_final: int, withdrawn: int) -> int:
     """Compatibilidad legacy.
-    Antes: caja final teórica = efectivo bruto - retirado.
-    Ahora: la Caja final se carga manualmente, por lo que la 'teórica' coincide con la real.
+    Antes: caja final teorica = efectivo bruto - retirado.
+    Ahora: la Caja final se carga manualmente, por lo que la 'teorica' coincide con la real.
     """
     return int(cash_final or 0)
 
@@ -823,8 +823,8 @@ def get_locked_opening_cash(day_obj: date, turn_code: str):
 def can_edit_close(u: User, close_row: ShiftClose) -> bool:
     """Permite re-ediciones del cierre (admin y no-admin).
 
-    Antes se limitaba a 1 edición para no-admin. A pedido, se habilita
-    edición ilimitada y se conserva el registro de quién editó (edited_by/at).
+    Antes se limitaba a 1 edicion para no-admin. A pedido, se habilita
+    edicion ilimitada y se conserva el registro de quien edito (edited_by/at).
     """
     if not u or not close_row:
         return False
@@ -915,7 +915,7 @@ def month_range(d: date) -> Tuple[date, date]:
 SATURDAY_MIN = 5 * 60 + 5  # 05:05 => 305 min
 
 def jornada_min_for_day(d: date) -> int:
-    # 0=lunes ... 5=sábado ... 6=domingo
+    # 0=lunes ... 5=sabado ... 6=domingo
     if d.weekday() == 5:
         return SATURDAY_MIN
     return JORNADA_MIN
@@ -947,7 +947,7 @@ def compute_work_minutes_and_flags(a) -> dict:
     warnings = []
 
     g = a.group_code or group_for_employee_on_day(emp, d)
-    exp = expected_times_for_group(g, d)  # OJO: tu función ya recibe (g,d)
+    exp = expected_times_for_group(g, d)  # OJO: tu funcion ya recibe (g,d)
     jornada_min = jornada_min_for_day(d)
     hday = (get_holiday_type(d) or "").upper().strip()  # "", "LABORABLE", "NO_LABORABLE"
 
@@ -991,10 +991,10 @@ def compute_work_minutes_and_flags(a) -> dict:
         }
 
     # =========================
-    # Cálculo de minutos trabajados
+    # Calculo de minutos trabajados
     # =========================
 
-    # Mañana
+    # Manana
     if a.morning_in or a.morning_out:
         mi = a.morning_in or exp.get("morning_in")
         mo = a.morning_out or exp.get("morning_out")
@@ -1017,7 +1017,7 @@ def compute_work_minutes_and_flags(a) -> dict:
         if v > 0:
             total_worked += v
 
-    # Si no cargó nada (ni mañana ni tarde), asumimos jornada completa
+    # Si no cargo nada (ni manana ni tarde), asumimos jornada completa
     if not (a.morning_in or a.morning_out or a.afternoon_in or a.afternoon_out):
         total_worked = jornada_min
 
@@ -1045,7 +1045,7 @@ def compute_work_minutes_and_flags(a) -> dict:
         unpaid = max(0, req - remaining)
         rp_unpaid = unpaid
         if unpaid > 0:
-            warnings.append(f"⚠ Excede RP: {unpaid} min NO pagos")
+            warnings.append(f"! Excede RP: {unpaid} min NO pagos")
         payable = max(0, payable - unpaid)
 
     if a.novelty == "Enfermedad":
@@ -1055,7 +1055,7 @@ def compute_work_minutes_and_flags(a) -> dict:
         unpaid = max(0, req - remaining)
         sick_unpaid = unpaid
         if unpaid > 0:
-            warnings.append(f"⚠ Excede Enfermedad: {unpaid} min NO pagos")
+            warnings.append(f"! Excede Enfermedad: {unpaid} min NO pagos")
         payable = max(0, payable - unpaid)
 
     if a.novelty == "Curso":
@@ -1065,17 +1065,17 @@ def compute_work_minutes_and_flags(a) -> dict:
         warnings.append(f"Tardanza: {tardy_min} min")
 
     # =========================
-    # Validaciones “de gestión” (avisos)
+    # Validaciones "de gestion" (avisos)
     # =========================
-    # Si faltan horas y no hay novedad → warning
+    # Si faltan horas y no hay novedad -> warning
     if payable < jornada_min and not (a.novelty or "").strip():
-        warnings.append("⚠ Faltan horas: cargá novedad")
+        warnings.append("! Faltan horas: carga novedad")
 
-    # Si sobran horas y no hay notas → warning
+    # Si sobran horas y no hay notas -> warning
     if payable > jornada_min and not (a.notes or "").strip():
-        warnings.append("⚠ Horas extra: justificá en notas")
+        warnings.append("! Horas extra: justifica en notas")
 
-    # Mañana
+    # Manana
     if a.morning_in or a.morning_out:
         mi = a.morning_in or (exp.get("morning_in") or "")
         mo = a.morning_out or (exp.get("morning_out") or "")
@@ -1099,7 +1099,7 @@ def compute_work_minutes_and_flags(a) -> dict:
         if v > 0:
             total_worked += v
 
-    # Si no cargó nada en ningún bloque, asumimos jornada completa del día
+    # Si no cargo nada en ningun bloque, asumimos jornada completa del dia
     if not (a.morning_in or a.morning_out or a.afternoon_in or a.afternoon_out):
         total_worked = jornada_min
 
@@ -1129,7 +1129,7 @@ def compute_work_minutes_and_flags(a) -> dict:
         unpaid = max(0, req - remaining)
         rp_unpaid = unpaid
         if unpaid > 0:
-            warnings.append(f"⚠ Excede RP: {unpaid} min NO pagos")
+            warnings.append(f"! Excede RP: {unpaid} min NO pagos")
         payable = max(0, payable - unpaid)
 
     if a.novelty == "Enfermedad":
@@ -1139,7 +1139,7 @@ def compute_work_minutes_and_flags(a) -> dict:
         unpaid = max(0, req - remaining)
         sick_unpaid = unpaid
         if unpaid > 0:
-            warnings.append(f"⚠ Excede Enfermedad: {unpaid} min NO pagos")
+            warnings.append(f"! Excede Enfermedad: {unpaid} min NO pagos")
         payable = max(0, payable - unpaid)
 
     if a.novelty == "Curso":
@@ -1159,12 +1159,12 @@ def compute_work_minutes_and_flags(a) -> dict:
     # Reglas de control: menos horas => debe haber novedad
     if total_worked < jornada_min:
         if total_worked > 0 and not (a.novelty or "").strip():
-            warnings.append("⚠ Menos horas: cargá una Novedad")
+            warnings.append("! Menos horas: carga una Novedad")
 
-    # Más horas => debe haber nota
+    # Mas horas => debe haber nota
     if total_worked > jornada_min:
         if not (a.notes or "").strip():
-            warnings.append("⚠ Horas extra: cargá Nota")
+            warnings.append("! Horas extra: carga Nota")
 
     return {
         "total_worked_min": total_worked,
@@ -1265,12 +1265,12 @@ LOGIN_HTML = """
         <option value="{{u}}">{{u}}</option>
       {% endfor %}
     </select>
-    <label>Contraseña</label>
+    <label>Contrasena</label>
     <input type="password" name="password" required>
     <button class="btn">Entrar</button>
   </form>
-  <p class="muted">Primera vez: configurá tu contraseña.</p>
-  <p><a href="{{ url_for('setup_password') }}">Configurar contraseña</a></p>
+  <p class="muted">Primera vez: configura tu contrasena.</p>
+  <p><a href="{{ url_for('setup_password') }}">Configurar contrasena</a></p>
 </div>
 </body>
 </html>
@@ -1279,7 +1279,7 @@ LOGIN_HTML = """
 SETUP_HTML = """
 <!doctype html>
 <html lang="es">
-<head><meta charset="utf-8"><title>Configurar contraseña</title>
+<head><meta charset="utf-8"><title>Configurar contrasena</title>
 """ + BASE_CSS + """
 <style>
   body{max-width:480px;}
@@ -1293,7 +1293,7 @@ SETUP_HTML = """
 </head>
 <body>
 <div class="card">
-  <h2 style="margin-top:0">Configurar contraseña</h2>
+  <h2 style="margin-top:0">Configurar contrasena</h2>
   {% if err %}<p class="err"><b>{{err}}</b></p>{% endif %}
   {% if msg %}<p class="ok"><b>{{msg}}</b></p>{% endif %}
   <form method="post">
@@ -1303,9 +1303,9 @@ SETUP_HTML = """
         <option value="{{u}}">{{u}}</option>
       {% endfor %}
     </select>
-    <label>Nueva contraseña</label>
+    <label>Nueva contrasena</label>
     <input type="password" name="p1" required>
-    <label>Confirmar contraseña</label>
+    <label>Confirmar contrasena</label>
     <input type="password" name="p2" required>
     <button class="btn">Guardar</button>
   </form>
@@ -1328,9 +1328,9 @@ def login():
         password = request.form.get("password") or ""
         u = User.query.filter_by(username=username, is_active=1).first()
         if not u or not u.password_hash:
-            err = "Usuario no configurado. Configurá tu contraseña primero."
+            err = "Usuario no configurado. Configura tu contrasena primero."
         elif not check_password_hash(u.password_hash, password):
-            err = "Contraseña incorrecta."
+            err = "Contrasena incorrecta."
         else:
             session["user_id"] = u.id
             nxt = request.args.get("next") or url_for("home")
@@ -1347,17 +1347,17 @@ def setup_password():
         p1 = request.form.get("p1") or ""
         p2 = request.form.get("p2") or ""
         if p1 != p2:
-            err = "Las contraseñas no coinciden."
+            err = "Las contrasenas no coinciden."
         elif len(p1) < 4:
-            err = "Contraseña demasiado corta (mínimo 4)."
+            err = "Contrasena demasiado corta (minimo 4)."
         else:
             u = User.query.filter_by(username=username, is_active=1).first()
             if not u:
-                err = "Usuario inválido."
+                err = "Usuario invalido."
             else:
                 u.password_hash = generate_password_hash(p1)
                 db.session.commit()
-                msg = "Contraseña guardada. Ya podés ingresar."
+                msg = "Contrasena guardada. Ya podes ingresar."
     return render_template_string(SETUP_HTML, users=users, err=err, msg=msg)
 
 @app.route("/logout")
@@ -1405,7 +1405,7 @@ HOME_HTML = """
   <div class="cards">
     <a class="card" href="{{ url_for('caja_index') }}">
       <p class="t">Control de Caja</p>
-      <p class="d">Turnos, cierres, edición, export e import.</p>
+      <p class="d">Turnos, cierres, edicion, export e import.</p>
     </a>
 
     <a class="card" href="{{ url_for('asistencia') }}">
@@ -1415,18 +1415,18 @@ HOME_HTML = """
 
     <a class="card" href="{{ url_for('stock') }}">
       <p class="t">Control de Stock</p>
-      <p class="d">En construcción.</p>
+      <p class="d">En construccion.</p>
     </a>
   
     <a class="card" href="{{ url_for('m_login') }}">
-      <p class="t">PORÁ Mobile</p>
-      <p class="d">Portal móvil (PIN): adelantos, asistencia (futuro), stock (futuro).</p>
+      <p class="t">PORA Mobile</p>
+      <p class="d">Portal movil (PIN): adelantos, asistencia (futuro), stock (futuro).</p>
     </a>
 
     {% if role == 'admin' %}
     <a class="card" href="{{ url_for('admin_pin_mobile') }}">
       <p class="t">PIN Mobile</p>
-      <p class="d">Asignar / cambiar PIN de acceso para el portal móvil.</p>
+      <p class="d">Asignar / cambiar PIN de acceso para el portal movil.</p>
     </a>
     {% endif %}
 
@@ -1444,7 +1444,7 @@ def home():
 @app.route("/stock")
 @login_required
 def stock():
-    return "<h2>Stock (en construcción)</h2><p><a href='/'>Volver</a></p>"
+    return "<h2>Stock (en construccion)</h2><p><a href='/'>Volver</a></p>"
 
 
 ADMIN_PIN_HTML = """
@@ -1454,17 +1454,17 @@ ADMIN_PIN_HTML = """
 <body style="max-width:900px;">
   <div class="top">
     <div>
-      <h2 style="margin:0;">PIN Mobile (PORÁ Mobile)</h2>
-      <div class="muted"><a href="{{ url_for('home') }}">← Volver al menú</a></div>
+      <h2 style="margin:0;">PIN Mobile (PORA Mobile)</h2>
+      <div class="muted"><a href="{{ url_for('home') }}"><- Volver al menu</a></div>
     </div>
   </div>
 
   <div class="box" style="margin-top:10px;">
     <b>Reglas</b>
     <ul class="muted">
-      <li>PIN de 4 dígitos (solo números).</li>
+      <li>PIN de 4 digitos (solo numeros).</li>
       <li>No se permiten PIN duplicados.</li>
-      <li>Si cambiás un PIN, el anterior queda libre automáticamente.</li>
+      <li>Si cambias un PIN, el anterior queda libre automaticamente.</li>
     </ul>
   </div>
 
@@ -1477,11 +1477,11 @@ ADMIN_PIN_HTML = """
       <tr>
         <td><b>{{u.username}}</b></td>
         <td>{{u.role}}</td>
-        <td>{{ "Sí" if u.mobile_pin_hash else "-" }}</td>
+        <td>{{ "Si" if u.mobile_pin_hash else "-" }}</td>
         <td>
           <form method="post" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
             <input type="hidden" name="uid" value="{{u.id}}">
-            <input type="text" name="pin" inputmode="numeric" pattern="\\d{4}" maxlength="4" placeholder="4 dígitos" required style="width:120px; padding:8px;">
+            <input type="text" name="pin" inputmode="numeric" pattern="\\d{4}" maxlength="4" placeholder="4 digitos" required style="width:120px; padding:8px;">
             <button class="btn">Guardar</button>
           </form>
         </td>
@@ -1505,7 +1505,7 @@ def admin_pin_mobile():
             pin = (request.form.get("pin") or "").strip()
             u = User.query.get(uid)
             if not u:
-                raise ValueError("Usuario inválido.")
+                raise ValueError("Usuario invalido.")
             set_mobile_pin(u, pin)
             db.session.commit()
             msg = f"PIN actualizado para {u.username}."
@@ -1518,7 +1518,7 @@ def admin_pin_mobile():
 
 
 # ==============================
-# PORÁ Mobile - UI (fase 1)
+# PORA Mobile - UI (fase 1)
 # ==============================
 
 MOBILE_BASE_CSS = """
@@ -1556,25 +1556,25 @@ MOBILE_BASE_CSS = """
 M_LOGIN_HTML = """
 <!doctype html>
 <html lang="es">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PORÁ Mobile</title>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PORA Mobile</title>
 """ + MOBILE_BASE_CSS + """
 </head>
 <body>
   <div class="wrap">
     <div class="card">
-      <div class="title">PORÁ Mobile</div>
-      <div class="sub">Ingresá tu PIN para continuar</div>
+      <div class="title">PORA Mobile</div>
+      <div class="sub">Ingresa tu PIN para continuar</div>
 
       {% if err %}<div class="err"><b>{{err}}</b></div>{% endif %}
       {% if msg %}<div class="ok"><b>{{msg}}</b></div>{% endif %}
 
       <form method="post" class="grid" autocomplete="off">
-        <label>PIN (4 dígitos)</label>
-        <input name="pin" inputmode="numeric" pattern="\\d{4}" maxlength="4" placeholder="••••" required autofocus>
+        <label>PIN (4 digitos)</label>
+        <input name="pin" inputmode="numeric" pattern="\\d{4}" maxlength="4" placeholder="****" required autofocus>
         <button class="btn" type="submit">Ingresar</button>
       </form>
       <div class="muted" style="margin-top:10px;">
-        Si no tenés PIN, pedíselo a un administrador.
+        Si no tenes PIN, pediselo a un administrador.
       </div>
     </div>
   </div>
@@ -1585,30 +1585,30 @@ M_LOGIN_HTML = """
 M_MENU_HTML = """
 <!doctype html>
 <html lang="es">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PORÁ Mobile</title>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PORA Mobile</title>
 """ + MOBILE_BASE_CSS + """
 </head>
 <body>
   <div class="wrap">
     <div class="card">
-      <div class="title">PORÁ Mobile</div>
+      <div class="title">PORA Mobile</div>
       <div class="sub">Hola, <b>{{u.username}}</b> <span class="pill">{{u.role}}</span></div>
 
       <div class="grid" style="margin-top:10px;">
-        <a class="btn" href="{{ url_for('m_adv_new') }}">💰 Solicitar adelanto</a>
-        <a class="btn2" href="{{ url_for(\'m_adv_history\') }}">📜 Historial de adelantos</a>
+        <a class="btn" href="{{ url_for('m_adv_new') }}">$ Solicitar adelanto</a>
+        <a class="btn2" href="{{ url_for(\'m_adv_history\') }}">[Historial] Historial de adelantos</a>
 
         {% if u.role == 'admin' %}
-          <a class="btn2" href="{{ url_for('m_adv_admin') }}">🧾 Aprobar / Rechazar adelantos</a>
+          <a class="btn2" href="{{ url_for('m_adv_admin') }}">[Admin] Aprobar / Rechazar adelantos</a>
         {% endif %}
 
         <form method="post" action="{{ url_for('m_logout') }}">
-          <button class="btn2" type="submit">Cerrar sesión</button>
+          <button class="btn2" type="submit">Cerrar sesion</button>
         </form>
       </div>
 
       <div class="muted" style="margin-top:12px;">
-        (Más adelante: asistencia, stock, etc.)
+        (Mas adelante: asistencia, stock, etc.)
       </div>
     </div>
   </div>
@@ -1656,7 +1656,7 @@ M_ADV_ADMIN_HTML = """
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Adelantos</title>
 """ + MOBILE_BASE_CSS + """
 <style>
-  /* Lista mobile más estable que una tabla (evita desalineados) */
+  /* Lista mobile mas estable que una tabla (evita desalineados) */
   .advlist{display:flex; flex-direction:column; gap:12px; margin-top:10px;}
   .advitem{border:1px solid rgba(255,255,255,0.10); background:rgba(255,255,255,0.04); border-radius:16px; padding:12px;}
   .advgrid{display:grid; grid-template-columns: 1fr 1fr; gap:10px 12px; align-items:start;}
@@ -1672,7 +1672,7 @@ M_ADV_ADMIN_HTML = """
   <div class="wrap">
     <div class="card">
       <div class="title">Adelantos</div>
-      <div class="sub">Pendientes de decisión</div>
+      <div class="sub">Pendientes de decision</div>
 
       {% if err %}<div class="err"><b>{{err}}</b></div>{% endif %}
       {% if msg %}<div class="ok"><b>{{msg}}</b></div>{% endif %}
@@ -1694,7 +1694,7 @@ M_ADV_ADMIN_HTML = """
                 </div>
 
                 <div>
-                  <div class="lbl">Día</div>
+                  <div class="lbl">Dia</div>
                   <div class="val">{{ a.requested_for_date|weekday_es }}</div>
                 </div>
                 <div>
@@ -1756,7 +1756,7 @@ M_ADV_HISTORY_HTML = """
         <table>
           <tr>
             {% if is_admin %}<th class="nowrap">Empleado</th>{% endif %}
-            <th class="nowrap">Día</th>
+            <th class="nowrap">Dia</th>
             <th class="nowrap">Fecha</th>
             <th class="nowrap">Monto</th>
             <th>Estado</th>
@@ -1798,7 +1798,7 @@ M_ADV_HISTORY_HTML = """
 
 
 def _mobile_fail_state():
-    # Estado de bloqueo simple para intentos sin usuario (sesión anónima)
+    # Estado de bloqueo simple para intentos sin usuario (sesion anonima)
     until_iso = session.get("m_lock_until")
     if until_iso:
         try:
@@ -1819,8 +1819,8 @@ def _mobile_set_lock(minutes=10):
 @login_required
 @admin_required
 def admin_fix_responsables():
-    """Corrige turnos donde 'responsible' quedó con un número (por error de carga/import).
-    Heurística: si responsible es numérico y opening_cash == 0, asumimos que ese número era la caja inicial.
+    """Corrige turnos donde 'responsible' quedo con un numero (por error de carga/import).
+    Heuristica: si responsible es numerico y opening_cash == 0, asumimos que ese numero era la caja inicial.
     Luego seteamos responsible con el primer admin configurado.
     """
     fixed = 0
@@ -1852,23 +1852,23 @@ def admin_fix_responsables():
 
 @app.route("/m", methods=["GET","POST"])
 def m_login():
-    # Si ya está logueado en mobile
+    # Si ya esta logueado en mobile
     if mobile_current_user():
         return redirect(url_for("m_menu"))
 
     locked, until = _mobile_fail_state()
     if locked:
         mins = int((until - datetime.utcnow()).total_seconds() // 60) + 1
-        return render_template_string(M_LOGIN_HTML, err=f"Demasiados intentos. Esperá {mins} min.", msg=None)
+        return render_template_string(M_LOGIN_HTML, err=f"Demasiados intentos. Espera {mins} min.", msg=None)
 
     err = None
     msg = None
     if request.method == "POST":
         pin = (request.form.get("pin") or "").strip()
 
-        # Validación simple
+        # Validacion simple
         if not (pin.isdigit() and len(pin) == 4):
-            err = "PIN inválido."
+            err = "PIN invalido."
         else:
             fp = _pin_fingerprint(pin)
             u = User.query.filter_by(mobile_pin_fingerprint=fp, is_active=1).first()
@@ -1880,13 +1880,13 @@ def m_login():
                 if fails >= 5:
                     until = _mobile_set_lock(10)
                     mins = int((until - datetime.utcnow()).total_seconds() // 60) + 1
-                    err = f"Demasiados intentos. Esperá {mins} min."
+                    err = f"Demasiados intentos. Espera {mins} min."
                 else:
                     err = "PIN incorrecto."
             else:
                 if is_mobile_locked(u):
                     mins = int((u.mobile_pin_locked_until - datetime.utcnow()).total_seconds() // 60) + 1
-                    err = f"PIN bloqueado. Esperá {mins} min."
+                    err = f"PIN bloqueado. Espera {mins} min."
                 elif not check_mobile_pin(u, pin):
                     u.mobile_pin_attempts = int(u.mobile_pin_attempts or 0) + 1
                     if u.mobile_pin_attempts >= 5:
@@ -1935,9 +1935,9 @@ def m_adv_new():
             reason = (request.form.get("reason") or "").strip() or None
 
             if amount is None or amount <= 0:
-                raise ValueError("Monto inválido.")
+                raise ValueError("Monto invalido.")
             if not req_date_s:
-                raise ValueError("Fecha inválida.")
+                raise ValueError("Fecha invalida.")
             req_date = date.fromisoformat(req_date_s)
 
             ar = AdvanceRequest(
@@ -1950,7 +1950,7 @@ def m_adv_new():
             )
             db.session.add(ar)
             db.session.commit()
-            msg = "Solicitud enviada ✅"
+            msg = "Solicitud enviada "
         except Exception as ex:
             db.session.rollback()
             err = str(ex)
@@ -2020,7 +2020,7 @@ def m_adv_history():
 
     rows = []
     for ar, usr in rows_db:
-        # Día/fecha = requested_for_date (la fecha deseada)
+        # Dia/fecha = requested_for_date (la fecha deseada)
         req_d = ar.requested_for_date or ar.created_at.date()
         rows.append({
             "employee": (getattr(usr, "username", None) or getattr(usr, "name", None) or ""),
@@ -2123,7 +2123,7 @@ CAJA_INDEX_HTML = """
     <img src="{{ url_for('static', filename='img/pora_logo.png') }}" alt="PORA">
     <div>
       <h1 style="margin:0;">Control de Caja</h1>
-      <div class="muted"><a href="{{ url_for('home') }}">← Volver al menú</a></div>
+      <div class="muted"><a href="{{ url_for('home') }}"><- Volver al menu</a></div>
 
       <form method="get" action="{{ url_for('caja_index') }}" style="margin-top:6px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
         <label class="muted">Fecha:</label>
@@ -2140,17 +2140,17 @@ CAJA_INDEX_HTML = """
   </div>
 </div>
 
-<h2>Turnos del día</h2>
+<h2>Turnos del dia</h2>
 <table class="tight">
   <tr>
-    <th>Día</th>
+    <th>Dia</th>
     <th>Turno</th>
     <th>Responsable</th>
     <th>Estado</th>
     <th>Cierre</th>
     <th>Ventas netas</th>
     <th>Efectivo disponible</th>
-    <th>Acción</th>
+    <th>Accion</th>
   </tr>
 
   {% for code,name in turns %}
@@ -2213,8 +2213,8 @@ CAJA_INDEX_HTML = """
 
 {% if efectivo_total_dia is not none %}
   <div class="smallnote">
-    <b>Total efectivo disponible del día:</b> {{ efectivo_total_dia|money }}
-    <br><b>Total ingreso del día (neto):</b> {{ ingreso_neto_total_dia|money }}
+    <b>Total efectivo disponible del dia:</b> {{ efectivo_total_dia|money }}
+    <br><b>Total ingreso del dia (neto):</b> {{ ingreso_neto_total_dia|money }}
   </div>
 {% endif %}
 
@@ -2237,7 +2237,7 @@ CAJA_INDEX_HTML = """
     <label>Turno</label>
     <select name="turn">
       <option value="ALL" {% if turn=='ALL' %}selected{% endif %}>Todos</option>
-      <option value="MORNING" {% if turn=='MORNING' %}selected{% endif %}>Mañana</option>
+      <option value="MORNING" {% if turn=='MORNING' %}selected{% endif %}>Manana</option>
       <option value="AFTERNOON" {% if turn=='AFTERNOON' %}selected{% endif %}>Tarde</option>
     </select>
   </div>
@@ -2259,7 +2259,7 @@ CAJA_INDEX_HTML = """
 
 <table class="tight summary-table">
   <tr>
-    <th>Día</th>
+    <th>Dia</th>
     <th class="nowrap">Fecha</th>
     <th>Turno</th>
     <th>Responsable</th>
@@ -2271,7 +2271,7 @@ CAJA_INDEX_HTML = """
     <th>Egresos</th>
     <th>Ventas<br>totales</th>
     <th class="net-soft">Ventas<br>netas</th>
-    <th class="net-soft">Ventas netas<br>del día</th>
+    <th class="net-soft">Ventas netas<br>del dia</th>
     <th>Retirado</th>
     <th>Caja Final<br>(Real)</th>
   </tr>
@@ -2325,7 +2325,7 @@ OPEN_HTML = """
 </style>
 </head>
 <body>
-<a href="{{ url_for('caja_index', d=d) }}">← Volver</a>
+<a href="{{ url_for('caja_index', d=d) }}"><- Volver</a>
 <h3>Abrir turno {{turn_name}} ({{day}})</h3>
 
 <div class="box">
@@ -2392,8 +2392,8 @@ SHIFT_HTML = """
 </style>
 </head>
 <body>
-<a href="{{ url_for('caja_index', d=d) }}">← Volver</a>
-<h2>Turno {{turn_name}} — {{s.day}}</h2>
+<a href="{{ url_for('caja_index', d=d) }}"><- Volver</a>
+<h2>Turno {{turn_name}} - {{s.day}}</h2>
 
 <p>
   Responsable: <b>{{s.responsible}}</b> |
@@ -2463,7 +2463,7 @@ SHIFT_HTML = """
     <button class="btn">Agregar</button>
   </form>
 
-  <button type="button" class="btn" id="openDeliveryCalcBtn">Cálculo para delivery</button>
+  <button type="button" class="btn" id="openDeliveryCalcBtn">Calculo para delivery</button>
 </div>
 
 <div class="delivery-backdrop" id="deliveryBackdrop"></div>
@@ -2471,7 +2471,7 @@ SHIFT_HTML = """
   <div class="head">
     <div>
       <h3>Calculadora pago delivery</h3>
-      <div class="muted">Los importes por pedido/hora vienen precargados, pero podés editarlos. La información se guarda automáticamente en este turno.</div>
+      <div class="muted">Los importes por pedido/hora vienen precargados, pero podes editarlos. La informacion se guarda automaticamente en este turno.</div>
     </div>
     <button type="button" class="btn" id="closeDeliveryCalcBtn">Cerrar</button>
   </div>
@@ -2488,28 +2488,28 @@ SHIFT_HTML = """
       <td>
         <div class="money-input-wrap">$ <input type="number" class="del-rate" data-row="0" value="1500"></div>
       </td>
-      <td><input type="number" class="del-qty qty-input" data-row="0" value="0" min="0"></td>
+      <td><input type="number" class="del-qty qty-input" data-row="0" value="0" min="0" step="1"></td>
       <td class="del-total" data-row="0">$ 0</td>
     </tr>
     <tr>
       <td>
         <div class="money-input-wrap">$ <input type="number" class="del-rate" data-row="1" value="2000"></div>
       </td>
-      <td><input type="number" class="del-qty qty-input" data-row="1" value="0" min="0"></td>
+      <td><input type="number" class="del-qty qty-input" data-row="1" value="0" min="0" step="1"></td>
       <td class="del-total" data-row="1">$ 0</td>
     </tr>
     <tr>
       <td>
         <div class="money-input-wrap">$ <input type="number" class="del-rate" data-row="2" value="2500"></div>
       </td>
-      <td><input type="number" class="del-qty qty-input" data-row="2" value="0" min="0"></td>
+      <td><input type="number" class="del-qty qty-input" data-row="2" value="0" min="0" step="1"></td>
       <td class="del-total" data-row="2">$ 0</td>
     </tr>
     <tr>
       <td>
         <div class="money-input-wrap">$ <input type="number" class="del-rate" data-row="3" value="3000"></div>
       </td>
-      <td><input type="number" class="del-qty qty-input" data-row="3" value="0" min="0"></td>
+      <td><input type="number" class="del-qty qty-input" data-row="3" value="0" min="0" step="1"></td>
       <td class="del-total" data-row="3">$ 0</td>
     </tr>
     <tr>
@@ -2517,7 +2517,7 @@ SHIFT_HTML = """
       <td>
         <div class="money-input-wrap">$ <input type="number" class="del-rate" data-row="4" value="2500"></div>
       </td>
-      <td><input type="number" class="del-qty qty-input" data-row="4" value="0" min="0"></td>
+      <td><input type="number" class="del-qty qty-input" data-row="4" value="0" min="0" step="0.01"></td>
       <td class="del-total" data-row="4">$ 0</td>
     </tr>
     <tr class="delivery-total-row">
@@ -2538,7 +2538,7 @@ SHIFT_HTML = """
         <input type="text" id="deliveryConsumeNote" placeholder="Ej: gaseosa, cena, peaje, etc.">
       </div>
     </div>
-    <div class="muted" style="margin-top:8px;">El monto de consumos se descuenta del total de viajes / horas.</div>
+    <div class="muted" style="margin-top:8px;">El monto de consumos se descuenta del total de viajes / horas. En Horas podes cargar decimales, por ejemplo 3.75.</div>
   </div>
 
   <div class="delivery-impact-box">
@@ -2550,11 +2550,11 @@ SHIFT_HTML = """
   </div>
 </div>
 {% else %}
-<p class="muted">Turno cerrado: no se pueden agregar egresos desde acá. Usá Editar (todo).</p>
+<p class="muted">Turno cerrado: no se pueden agregar egresos desde aca. Usa Editar (todo).</p>
 {% endif %}
 
 <table style="margin-top:10px;">
-  <tr><th>Categoría</th><th>Monto</th><th>Nota</th></tr>
+  <tr><th>Categoria</th><th>Monto</th><th>Nota</th></tr>
   {% for e in expenses %}
     <tr><td>{{e.category}}</td><td>{{e.amount|money}}</td><td>{{e.note or ''}}</td></tr>
   {% endfor %}
@@ -2606,6 +2606,13 @@ SHIFT_HTML = """
       v = (v || "").toString().trim();
       if(v === "") return 0;
       const n = parseInt(v, 10);
+      return isNaN(n) ? 0 : n;
+    }
+
+    function toNum(v){
+      v = (v || "").toString().trim().replace(",", ".");
+      if(v === "") return 0;
+      const n = parseFloat(v);
       return isNaN(n) ? 0 : n;
     }
 
@@ -2674,7 +2681,7 @@ SHIFT_HTML = """
       try{
         const payload = {
           rates: deliveryRateEls.map(el => toInt(el.value)),
-          qtys: deliveryQtyEls.map(el => toInt(el.value)),
+          qtys: deliveryQtyEls.map((el, i) => i === 4 ? toNum(el.value) : toInt(el.value)),
           consume_amount: toInt(deliveryConsumeAmountEl ? deliveryConsumeAmountEl.value : 0),
           consume_note: deliveryConsumeNoteEl ? (deliveryConsumeNoteEl.value || "") : ""
         };
@@ -2717,21 +2724,21 @@ SHIFT_HTML = """
     function recalcDeliveryCalc(){
       let grand = 0;
       deliveryRateEls.forEach((el, i) => {
-        const rate = toInt(el.value);
-        const qty = toInt(deliveryQtyEls[i].value);
+        const rate = toNum(el.value);
+        const qty = (i === 4) ? toNum(deliveryQtyEls[i].value) : toInt(deliveryQtyEls[i].value);
         const total = rate * qty;
         grand += total;
         if(deliveryTotalEls[i]){
-          deliveryTotalEls[i].textContent = fmtMoney(total);
+          deliveryTotalEls[i].textContent = fmtMoney(Math.round(total));
         }
       });
       const consumeAmount = toInt(deliveryConsumeAmountEl ? deliveryConsumeAmountEl.value : 0);
-      const net = Math.max(0, grand - consumeAmount);
+      const net = Math.max(0, Math.round(grand - consumeAmount));
       if(deliveryGrandTotalEl){
-        deliveryGrandTotalEl.textContent = fmtMoney(grand);
+        deliveryGrandTotalEl.textContent = fmtMoney(Math.round(grand));
       }
       if(deliveryNetTotalEl){
-        deliveryNetTotalEl.textContent = fmtMoney(net);
+        deliveryNetTotalEl.textContent = fmtMoney(Math.round(net));
       }
     }
 
@@ -2771,9 +2778,13 @@ SHIFT_HTML = """
 
     if(applyDeliveryExpenseBtn){
       applyDeliveryExpenseBtn.addEventListener("click", () => {
-        const grand = deliveryRateEls.reduce((acc, el, i) => acc + (toInt(el.value) * toInt(deliveryQtyEls[i].value)), 0);
+        const grand = deliveryRateEls.reduce((acc, el, i) => {
+          const rate = toNum(el.value);
+          const qty = (i === 4) ? toNum(deliveryQtyEls[i].value) : toInt(deliveryQtyEls[i].value);
+          return acc + (rate * qty);
+        }, 0);
         const consumeAmount = toInt(deliveryConsumeAmountEl ? deliveryConsumeAmountEl.value : 0);
-        const net = Math.max(0, grand - consumeAmount);
+        const net = Math.max(0, Math.round(grand - consumeAmount));
         const consumeNote = deliveryConsumeNoteEl ? (deliveryConsumeNoteEl.value || "").trim() : "";
 
         if(!expenseFormEl || !expenseCategoryEl || !expenseAmountEl || net <= 0){
@@ -2852,7 +2863,7 @@ SHIFT_HTML = """
       document.getElementById("h_sales_mp").value = toInt(mpEl.value);
       document.getElementById("h_sales_pya").value = toInt(pyaEl.value);
       document.getElementById("h_sales_rappi").value = toInt(rappiEl.value);
-      // no borramos draft: por si vuelve atrás
+      // no borramos draft: por si vuelve atras
     });
   </script>
 
@@ -2880,9 +2891,9 @@ EDIT_ALL_HTML = """
 </head>
 <body>
 
-<a href="{{ url_for('shift', id=s.id, d=d) }}">← Volver</a>
-<h2 style="margin-bottom:6px;">Editar (todo) — {{turn_name}} {{s.day}}</h2>
-<p class="muted">Usuario: <b>{{user.username}}</b> ({{user.role}}) — Ediciones previas: {{close.edit_count}}</p>
+<a href="{{ url_for('shift', id=s.id, d=d) }}"><- Volver</a>
+<h2 style="margin-bottom:6px;">Editar (todo) - {{turn_name}} {{s.day}}</h2>
+<p class="muted">Usuario: <b>{{user.username}}</b> ({{user.role}}) - Ediciones previas: {{close.edit_count}}</p>
 
 <form method="post">
   <div class="box">
@@ -2905,7 +2916,7 @@ EDIT_ALL_HTML = """
         <input type="text" value="{{s.day}}" readonly style="width:100%;">
       </div>
     </div>
-    <p class="muted">Cambiar CI impacta cálculos del turno siguiente.</p>
+    <p class="muted">Cambiar CI impacta calculos del turno siguiente.</p>
   </div>
 
   <div class="box">
@@ -2921,7 +2932,7 @@ EDIT_ALL_HTML = """
   <div class="box">
     <h3>Egresos (editar / borrar / agregar)</h3>
     <table>
-      <tr><th>Eliminar</th><th>Categoría</th><th class="right">Monto</th><th>Nota</th></tr>
+      <tr><th>Eliminar</th><th>Categoria</th><th class="right">Monto</th><th>Nota</th></tr>
       {% for e in expenses %}
         <tr>
           <td><input type="checkbox" name="del_{{e.id}}"></td>
@@ -2942,7 +2953,7 @@ EDIT_ALL_HTML = """
     </table>
 
     <h4 style="margin-top:12px;">Agregar egresos (hasta 5)</h4>
-    <p class="muted" style="margin-top:-6px;">Completá categoría y monto para cada egreso que quieras agregar.</p>
+    <p class="muted" style="margin-top:-6px;">Completa categoria y monto para cada egreso que quieras agregar.</p>
     <div class="grid">
       {% for i in range(1,6) %}
       <div class="row2" style="align-items:center;">
@@ -2978,23 +2989,23 @@ EDIT_ALL_HTML = """
         <input type="text" value="OK" readonly style="width:100%;">
       </div>
       <div>
-        <label class="muted">Observación</label><br>
+        <label class="muted">Observacion</label><br>
         <input type="text" value="{{close.note or ''}}" readonly style="width:100%;">
       </div>
     </div>
-    <p class="muted">La diferencia se mantiene en 0 (sin validación OK/NO OK por ahora).</p>
+    <p class="muted">La diferencia se mantiene en 0 (sin validacion OK/NO OK por ahora).</p>
 
   </div>
 
   <div class="box">
-    <h3>Auditoría</h3>
+    <h3>Auditoria</h3>
     <div class="row2">
-      <div><b>Motivo de edición (obligatorio)</b></div>
-      <div><input type="text" name="reason" required placeholder="Ej: se cargó venta luego del cierre" style="width:100%;"></div>
+      <div><b>Motivo de edicion (obligatorio)</b></div>
+      <div><input type="text" name="reason" required placeholder="Ej: se cargo venta luego del cierre" style="width:100%;"></div>
     </div>
   </div>
 
-  <button class="btn">Guardar edición</button>
+  <button class="btn">Guardar edicion</button>
 </form>
 
 </body>
@@ -3003,14 +3014,14 @@ EDIT_ALL_HTML = """
 
 
 def is_placeholder_shift(s: "Shift") -> bool:
-    """Devuelve True si el turno existe en BD pero en la práctica está 'vacío'
-    (típico de importaciones/placeholder): todo en 0, sin egresos, y (si existe) cierre vacío.
-    En ese caso, en el panel principal lo tratamos como NO ABIERTO para mostrar el botón 'Abrir'.
+    """Devuelve True si el turno existe en BD pero en la practica esta 'vacio'
+    (tipico de importaciones/placeholder): todo en 0, sin egresos, y (si existe) cierre vacio.
+    En ese caso, en el panel principal lo tratamos como NO ABIERTO para mostrar el boton 'Abrir'.
     """
     if not s:
         return True
 
-    # Solo consideramos placeholder a turnos CERRADOS en cero (evita ocultar un turno abierto recién iniciado).
+    # Solo consideramos placeholder a turnos CERRADOS en cero (evita ocultar un turno abierto recien iniciado).
     if (s.status or "").upper() != "CLOSED":
         return False
 
@@ -3058,8 +3069,8 @@ def caja_index():
 
     shifts = {s.turn: s for s in Shift.query.filter_by(day=day_obj).all()}
 
-    # Si por importación o error existe un turno 'cerrado' totalmente en cero, lo tratamos como NO ABIERTO.
-    # (Así el usuario ve el botón 'Abrir' en vez de 'Ver/Editar'.)
+    # Si por importacion o error existe un turno 'cerrado' totalmente en cero, lo tratamos como NO ABIERTO.
+    # (Asi el usuario ve el boton 'Abrir' en vez de 'Ver/Editar'.)
     for _t, _s in list(shifts.items()):
         if _s and is_placeholder_shift(_s):
             shifts[_t] = None
@@ -3401,7 +3412,7 @@ def edit_all(id):
             e.amount = int(amt)
             e.note = note or None
 
-        # Agregar múltiples egresos nuevos (hasta 5)
+        # Agregar multiples egresos nuevos (hasta 5)
         for i in range(1, 6):
             new_cat = (request.form.get(f"new_category_{i}") or "").strip()
             new_amt = safe_int(request.form.get(f"new_amount_{i}"))
@@ -3586,14 +3597,14 @@ def export_caja_json():
     return send_file(bio, as_attachment=True, download_name=filename, mimetype="application/json")
 
 # ==============================
-# IMPORT CAJA (Opción A)
+# IMPORT CAJA (Opcion A)
 # ==============================
 IMPORT_CAJA_HTML = """
 <!doctype html>
 <html lang="es">
 <head><meta charset="utf-8"><title>Import Caja</title>{{ base_css|safe }}</head>
 <body style="max-width:950px;">
-  <a href="{{ url_for('caja_index') }}">← Volver</a>
+  <a href="{{ url_for('caja_index') }}"><- Volver</a>
   <h2>Importar datos (Excel)</h2>
 
   <div class="box" style="margin-bottom:12px; border-color:#ffbf66;background:#fff0d6;">
@@ -3615,7 +3626,7 @@ IMPORT_CAJA_HTML = """
         <option value="skip" selected>Si existe el turno, NO tocarlo (skip)</option>
         <option value="replace">Si existe el turno, REEMPLAZAR (replace)</option>
       </select>
-      <div class="muted" style="margin-top:6px;">Tip: para “pisar todo”, usá modo <b>replace</b>.</div>
+      <div class="muted" style="margin-top:6px;">Tip: para "pisar todo", usa modo <b>replace</b>.</div>
     </div>
     <br>
     <button class="btn">Importar</button>
@@ -3654,7 +3665,7 @@ def import_caja():
         mode = (request.form.get("mode") or "skip").strip()
         f = request.files.get("file")
         if not f:
-            err = "No se recibió archivo."
+            err = "No se recibio archivo."
         else:
             try:
                 wb = load_workbook(f, data_only=True)
@@ -3789,12 +3800,12 @@ IMPORT_CAJA_JSON_HTML = """
 <html lang="es">
 <head><meta charset="utf-8"><title>Import Caja (JSON)</title>{{ base_css|safe }}</head>
 <body style="max-width:950px;">
-  <a href="{{ url_for('caja_index') }}">← Volver</a>
+  <a href="{{ url_for('caja_index') }}"><- Volver</a>
   <h2>Importar Backup JSON - Caja</h2>
 
   <div class="box" style="margin-bottom:12px;">
-    <b>Formato:</b> archivo JSON exportado por “Exportar JSON”.<br>
-    <b>Modo skip:</b> si el turno (día+turno) ya existe, no lo toca.<br>
+    <b>Formato:</b> archivo JSON exportado por "Exportar JSON".<br>
+    <b>Modo skip:</b> si el turno (dia+turno) ya existe, no lo toca.<br>
     <b>Modo replace:</b> borra ese turno (incluye egresos + cierre) y lo recrea.
   </div>
 
@@ -3829,13 +3840,13 @@ def import_caja_json():
         mode = (request.form.get("mode") or "skip").strip()
         f = request.files.get("file")
         if not f:
-            err = "No se recibió archivo."
+            err = "No se recibio archivo."
         else:
             try:
                 payload = json.load(f)
 
                 if not isinstance(payload, dict) or payload.get("type") != "caja_backup":
-                    raise ValueError("JSON inválido: no parece un backup de Caja.")
+                    raise ValueError("JSON invalido: no parece un backup de Caja.")
 
                 shifts = payload.get("shifts") or []
                 expenses = payload.get("expenses") or []
@@ -3995,26 +4006,26 @@ ATT_CONFIG_HTML = """
 <html lang="es">
 <head><meta charset="utf-8"><title>Config Asistencia</title>{{ base_css|safe }}</head>
 <body style="max-width:1000px;">
-  <a href="{{ url_for('asistencia') }}">← Volver</a>
+  <a href="{{ url_for('asistencia') }}"><- Volver</a>
   <h2>Configurar grupos / vacaciones</h2>
 
   <div class="box">
     <b>Horarios por grupo</b><br>
     <span class="muted">
-      <b>Grupo A:</b> {{ga.morning_in}}–{{ga.morning_out}} / {{ga.afternoon_in}}–{{ga.afternoon_out}}<br>
-      <b>Grupo B:</b> {{gb.morning_in}}–{{gb.morning_out}} / {{gb.afternoon_in}}–{{gb.afternoon_out}}
+      <b>Grupo A:</b> {{ga.morning_in}}-{{ga.morning_out}} / {{ga.afternoon_in}}-{{ga.afternoon_out}}<br>
+      <b>Grupo B:</b> {{gb.morning_in}}-{{gb.morning_out}} / {{gb.afternoon_in}}-{{gb.afternoon_out}}
     </span>
   </div>
 
   {% if msg %}<div class="box" style="border-color:#7ad2a4;background:#dff5e6;"><b>{{msg}}</b></div>{% endif %}
   {% if err %}<div class="box" style="border-color:#ffb866;background:#ffe6d6;"><b>Error:</b> {{err}}</div>{% endif %}
 
-  <h3>Rotación semanal (A/B)</h3>
+  <h3>Rotacion semanal (A/B)</h3>
   <div class="box">
     <p class="muted">
-      Rotación automática semanal (A↔B).<br>
+      Rotacion automatica semanal (AB).<br>
       {% if cfg_exists %}
-        <b>Edición:</b> solo Admin puede modificar configuración existente.
+        <b>Edicion:</b> solo Admin puede modificar configuracion existente.
       {% else %}
         <b>Inicial:</b> cualquier usuario puede configurar por primera vez.
       {% endif %}
@@ -4036,9 +4047,9 @@ ATT_CONFIG_HTML = """
         {% endfor %}
       </table>
       <br>
-      <button class="btn" {% if lock_rotation %}disabled{% endif %}>Guardar rotación</button>
+      <button class="btn" {% if lock_rotation %}disabled{% endif %}>Guardar rotacion</button>
       {% if lock_rotation %}
-        <div class="muted">Solo Admin puede editar esta configuración.</div>
+        <div class="muted">Solo Admin puede editar esta configuracion.</div>
       {% endif %}
     </form>
   </div>
@@ -4067,7 +4078,7 @@ ATT_CONFIG_HTML = """
     </form>
 
     <table style="margin-top:12px;">
-      <tr><th>Empleado</th><th>Desde</th><th>Hasta</th><th>Acción</th></tr>
+      <tr><th>Empleado</th><th>Desde</th><th>Hasta</th><th>Accion</th></tr>
       {% for v in vacations %}
         <tr>
           <td>{{v.employee}}</td>
@@ -4110,7 +4121,7 @@ def att_config():
         try:
             if action == "set_rotation":
                 if lock_rotation:
-                    raise ValueError("Solo Admin puede editar la rotación una vez creada.")
+                    raise ValueError("Solo Admin puede editar la rotacion una vez creada.")
                 m = {}
                 for e in EMPLOYEES:
                     g = (request.form.get(f"g_{e}") or "A").strip().upper()
@@ -4124,13 +4135,13 @@ def att_config():
                     cfg.week0_map = make_week0_map_str(m)
                     cfg.created_by = cfg.created_by or u.username
                 db.session.commit()
-                msg = "Rotación guardada."
+                msg = "Rotacion guardada."
             elif action == "add_vac":
                 emp = (request.form.get("emp") or "").strip()
                 start = date.fromisoformat(request.form.get("start"))
                 end = date.fromisoformat(request.form.get("end"))
                 if emp not in EMPLOYEES:
-                    raise ValueError("Empleado inválido.")
+                    raise ValueError("Empleado invalido.")
                 if start > end:
                     start, end = end, start
                 db.session.add(Vacation(employee=emp, start_day=start, end_day=end))
@@ -4190,7 +4201,7 @@ ASISTENCIA_HTML = """
 <div class="top">
   <div>
     <h2 style="margin:0;">Asistencia</h2>
-    <div class="muted"><a href="{{ url_for('home') }}">← Volver al menú</a></div>
+    <div class="muted"><a href="{{ url_for('home') }}"><- Volver al menu</a></div>
   </div>
     <div class="row">
       <a class="btn" href="{{ url_for('att_export_excel', emp=emp, start=start, end=end, novf=novf) }}">Exportar Excel</a>
@@ -4206,8 +4217,8 @@ ASISTENCIA_HTML = """
 <div class="box" style="margin-top:10px;">
   <b>Horarios por grupo</b><br>
   <span class="muted">
-    <b>Grupo A:</b> {{ga.morning_in}}–{{ga.morning_out}} / {{ga.afternoon_in}}–{{ga.afternoon_out}} &nbsp;&nbsp;|&nbsp;&nbsp;
-    <b>Grupo B:</b> {{gb.morning_in}}–{{gb.morning_out}} / {{gb.afternoon_in}}–{{gb.afternoon_out}}
+    <b>Grupo A:</b> {{ga.morning_in}}-{{ga.morning_out}} / {{ga.afternoon_in}}-{{ga.afternoon_out}} &nbsp;&nbsp;|&nbsp;&nbsp;
+    <b>Grupo B:</b> {{gb.morning_in}}-{{gb.morning_out}} / {{gb.afternoon_in}}-{{gb.afternoon_out}}
   </span>
 </div>
 
@@ -4229,7 +4240,7 @@ ASISTENCIA_HTML = """
     <select name="hday" style="min-width:220px;">
       <option value="" {% if hday=='' %}selected{% endif %}>-</option>
       <option value="LABORABLE" {% if hday=='LABORABLE' %}selected{% endif %}>Feriado Laborable</option>
-      <option value="NO_LABORABLE" {% if hday=='NO_LABORABLE' %}selected{% endif %}>Feriado No laborable (se paga el día)</option>
+      <option value="NO_LABORABLE" {% if hday=='NO_LABORABLE' %}selected{% endif %}>Feriado No laborable (se paga el dia)</option>
     </select>
   </div>
   <div>
@@ -4247,7 +4258,7 @@ ASISTENCIA_HTML = """
   <tr>
     <th class="w-emp">Empleado</th>
     <th class="w-group">Grupo</th>
-    <th colspan="3">Mañana</th>
+    <th colspan="3">Manana</th>
     <th colspan="3">Tarde</th>
     <th>Horas (paga)</th>
     <th class="w-nov">Novedad</th>
@@ -4393,7 +4404,7 @@ ASISTENCIA_HTML = """
     <th>Fecha</th>
     <th>Empleado</th>
     <th>Grupo</th>
-    <th>Mañana</th>
+    <th>Manana</th>
     <th>Tarde</th>
     <th>Horas pagas</th>
     <th>Novedad</th>
@@ -4492,7 +4503,7 @@ def attendance_summary_rows(start: date, end: date, employee: str, novf: str):
     q = Attendance.query.filter(Attendance.day >= start, Attendance.day <= end)
     if employee and employee != "ALL":
         q = q.filter(Attendance.employee == employee)
-    # NO filtramos por novf acá: Vacaciones puede venir de tabla Vacation
+    # NO filtramos por novf aca: Vacaciones puede venir de tabla Vacation
     q = q.order_by(Attendance.day.desc(), Attendance.employee.asc())
 
     rows = []
@@ -4519,8 +4530,8 @@ def attendance_summary_rows(start: date, end: date, employee: str, novf: str):
             "day": a.day.isoformat(),
             "employee": a.employee,
             "group": g,
-            "morning": f"{mi}–{mo}".strip("–"),
-            "afternoon": f"{ai}–{ao}".strip("–"),
+            "morning": f"{mi}-{mo}".strip("-"),
+            "afternoon": f"{ai}-{ao}".strip("-"),
             "payable": fmt_minutes(calc["payable_min"]),
             "novelty": novelty_display,
             "notes": a.notes or "",
@@ -4544,7 +4555,7 @@ def asistencia():
     start = start_date.isoformat()
     end = end_date.isoformat()
 
-    # feriado guardado para el día
+    # feriado guardado para el dia
     hday = get_holiday_type(day_obj)
 
     # ======= Aplicar feriado (POST) =======
@@ -4594,7 +4605,7 @@ def asistencia():
                 def get_post_time(field_name: str) -> Optional[str]:
                     v = (request.form.get(field_name) or "").strip()
                     if v and not valid_time_str(v):
-                        raise ValueError(f"Hora inválida en {emp_name}: {v}")
+                        raise ValueError(f"Hora invalida en {emp_name}: {v}")
                     return v or None
 
                 mi_post = get_post_time(f"{key}_mi")
@@ -4602,7 +4613,7 @@ def asistencia():
                 ai_post = get_post_time(f"{key}_ai")
                 ao_post = get_post_time(f"{key}_ao")
                 if vac or nov == "Vacaciones":
-                    # Vacaciones: se fija el horario esperado completo (según grupo/día)
+                    # Vacaciones: se fija el horario esperado completo (segun grupo/dia)
                     row.morning_in = exp.get("morning_in")
                     row.morning_out = exp.get("morning_out")
                     row.afternoon_in = exp.get("afternoon_in")
@@ -4623,7 +4634,7 @@ def asistencia():
                         row.afternoon_in = ai_post or row.afternoon_in or exp.get("afternoon_in")
                         row.afternoon_out = ao_post or row.afternoon_out or exp.get("afternoon_out")
                     else:
-                        # Manual: se guarda exactamente lo cargado (puede quedar vacío)
+                        # Manual: se guarda exactamente lo cargado (puede quedar vacio)
                         row.morning_in = mi_post
                         row.morning_out = mo_post
                         row.afternoon_in = ai_post
@@ -4650,11 +4661,11 @@ def asistencia():
                 if not (vac or nov == "Vacaciones" or nov == "Inasistencia"):
                     if calc["total_worked_min"] < jornada_min and not (row.novelty or ""):
                         raise ValueError(
-                            f"{emp_name}: si trabajó menos de {fmt_minutes(jornada_min)} debe cargar Novedad."
+                            f"{emp_name}: si trabajo menos de {fmt_minutes(jornada_min)} debe cargar Novedad."
                         )
                     if calc["total_worked_min"] > jornada_min and not (row.notes and row.notes.strip()):
                         raise ValueError(
-                            f"{emp_name}: si trabajó más de {fmt_minutes(jornada_min)} debe justificar en Notas."
+                            f"{emp_name}: si trabajo mas de {fmt_minutes(jornada_min)} debe justificar en Notas."
                         )
 
                 db.session.flush()
@@ -4676,7 +4687,7 @@ def asistencia():
             db.session.rollback()
             err = str(ex)
 
-    # refrescar feriado guardado (por si se modificó)
+    # refrescar feriado guardado (por si se modifico)
     hday = get_holiday_type(day_obj)
 
     rows = []
@@ -4829,7 +4840,7 @@ def att_export_excel():
     wb = Workbook()
     ws = wb.active
     ws.title = "Asistencia"
-    ws.append(["Fecha","Empleado","Grupo","Mañana","Tarde","Horas pagas","Novedad","Notas","Consumos total","Consumos items"])
+    ws.append(["Fecha","Empleado","Grupo","Manana","Tarde","Horas pagas","Novedad","Notas","Consumos total","Consumos items"])
 
     for r in data:
         ws.append([
@@ -4855,7 +4866,7 @@ def att_export_json():
     # Export del resumen filtrado (attendance + consumptions)
     data = attendance_summary_rows(start_date, end_date, emp, novf)
 
-    # Además exportamos los registros completos (attendance + consumptions)
+    # Ademas exportamos los registros completos (attendance + consumptions)
     q = Attendance.query.filter(Attendance.day >= start_date, Attendance.day <= end_date)
     if emp != "ALL":
         q = q.filter(Attendance.employee == emp)
@@ -4924,12 +4935,12 @@ IMPORT_ATT_HTML = """
 <html lang="es">
 <head><meta charset="utf-8"><title>Import Asistencia</title>{{ base_css|safe }}</head>
 <body style="max-width:950px;">
-  <a href="{{ url_for('asistencia') }}">← Volver</a>
+  <a href="{{ url_for('asistencia') }}"><- Volver</a>
   <h2>Importar datos (Excel) - Asistencia</h2>
 
   <div class="box" style="margin-bottom:12px;">
     <b>Formato:</b> hoja <code>attendance</code> (y opcional <code>consumptions</code>).<br>
-    Columnas mínimas: <code>day</code>, <code>employee</code>, <code>group</code>, <code>morning_in</code>, <code>morning_out</code>,
+    Columnas minimas: <code>day</code>, <code>employee</code>, <code>group</code>, <code>morning_in</code>, <code>morning_out</code>,
     <code>afternoon_in</code>, <code>afternoon_out</code>, <code>novelty</code>, <code>novelty_minutes</code>, <code>notes</code>.
   </div>
 
@@ -4943,8 +4954,8 @@ IMPORT_ATT_HTML = """
       <br><br>
       <label><b>Modo</b></label><br>
       <select name="mode">
-        <option value="skip" selected>Si existe el día/empleado, NO tocar (skip)</option>
-        <option value="replace">Si existe el día/empleado, REEMPLAZAR (replace)</option>
+        <option value="skip" selected>Si existe el dia/empleado, NO tocar (skip)</option>
+        <option value="replace">Si existe el dia/empleado, REEMPLAZAR (replace)</option>
       </select>
     </div>
     <br>
@@ -4963,7 +4974,7 @@ def import_asistencia():
         mode = (request.form.get("mode") or "skip").strip()
         f = request.files.get("file")
         if not f:
-            err = "No se recibió archivo."
+            err = "No se recibio archivo."
         else:
             try:
                 wb = load_workbook(f, data_only=True)
@@ -5074,14 +5085,14 @@ IMPORT_ATT_JSON_HTML = """
 <html lang="es">
 <head><meta charset="utf-8"><title>Import Asistencia (JSON)</title>{{ base_css|safe }}</head>
 <body style="max-width:950px;">
-  <a href="{{ url_for('asistencia') }}">← Volver</a>
+  <a href="{{ url_for('asistencia') }}"><- Volver</a>
   <h2>Importar Backup JSON - Asistencia</h2>
 
   <div class="box" style="margin-bottom:12px;">
-    <b>Formato:</b> archivo JSON exportado por “Exportar JSON”.<br>
-    <b>Modo skip:</b> si existe (día+empleado), no lo toca.<br>
-    <b>Modo replace:</b> reemplaza (día+empleado) y recrea consumos.<br>
-    <span class="muted">Además: si el JSON trae vacaciones / feriados / rotación, se “mergea” (upsert simple).</span>
+    <b>Formato:</b> archivo JSON exportado por "Exportar JSON".<br>
+    <b>Modo skip:</b> si existe (dia+empleado), no lo toca.<br>
+    <b>Modo replace:</b> reemplaza (dia+empleado) y recrea consumos.<br>
+    <span class="muted">Ademas: si el JSON trae vacaciones / feriados / rotacion, se "mergea" (upsert simple).</span>
   </div>
 
   {% if msg %}<div class="box" style="border-color:#7ad2a4;background:#dff5e6;"><b>{{msg}}</b></div>{% endif %}
@@ -5094,8 +5105,8 @@ IMPORT_ATT_JSON_HTML = """
       <br><br>
       <label><b>Modo</b></label><br>
       <select name="mode">
-        <option value="skip" selected>Si existe el día/empleado, NO tocar (skip)</option>
-        <option value="replace">Si existe el día/empleado, REEMPLAZAR (replace)</option>
+        <option value="skip" selected>Si existe el dia/empleado, NO tocar (skip)</option>
+        <option value="replace">Si existe el dia/empleado, REEMPLAZAR (replace)</option>
       </select>
     </div>
     <br>
@@ -5115,12 +5126,12 @@ def import_asistencia_json():
         mode = (request.form.get("mode") or "skip").strip()
         f = request.files.get("file")
         if not f:
-            err = "No se recibió archivo."
+            err = "No se recibio archivo."
         else:
             try:
                 payload = json.load(f)
                 if not isinstance(payload, dict) or payload.get("type") != "asistencia_backup":
-                    raise ValueError("JSON inválido: no parece un backup de Asistencia.")
+                    raise ValueError("JSON invalido: no parece un backup de Asistencia.")
 
                 attendances = payload.get("attendances") or []
 
@@ -5187,7 +5198,7 @@ def import_asistencia_json():
                 # merge extras (no pisa todo, solo upsert simple)
                 rc = payload.get("rotation_config")
                 if rc and isinstance(rc, dict) and rc.get("week0_map"):
-                    # guardamos como nueva config (la más nueva manda)
+                    # guardamos como nueva config (la mas nueva manda)
                     db.session.add(RotationConfig(
                         week0_map=str(rc.get("week0_map")),
                         created_by=(rc.get("created_by") or "import-json")
@@ -5229,7 +5240,7 @@ def import_asistencia_json():
 # MAIN
 # ==============================
 if __name__ == "__main__":
-    # En local (python app.py) sí usamos app.run.
+    # En local (python app.py) si usamos app.run.
     # En Render esto NO corre (porque Render usa gunicorn).
     port = int(os.getenv("PORT", "5050"))
     app.run(host="127.0.0.1", port=port, debug=False)
