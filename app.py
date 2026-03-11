@@ -20,6 +20,9 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import hashlib
 
 from openpyxl import load_workbook, Workbook
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
 # ==============================
 # FIX STATIC + APP + DB
@@ -104,6 +107,86 @@ if uri.startswith("postgresql://"):
     }
     
 db = SQLAlchemy(app)
+
+# ==============================
+# BACKUP AUTOMATICO CAJA
+# ==============================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BACKUP_DIR = os.path.join(BASE_DIR, "Backup")
+os.makedirs(BACKUP_DIR, exist_ok=True)
+
+GOOGLE_DRIVE_FOLDER_ID = "128rd1f2pEJWFtyY4EzAuCTq9PtiRUNMW"
+GOOGLE_DRIVE_KEY_PATH = os.path.join(BASE_DIR, "Clave Drive", "drive_key.json")
+
+def backup_caja_local():
+    try:
+        shifts = Shift.query.all()
+        expenses = CashExpense.query.all()
+        closes = ShiftClose.query.all()
+
+        payload = {
+            "exported_at": datetime.utcnow().isoformat(),
+            "shifts": [s.id for s in shifts],
+            "expenses": [e.id for e in expenses],
+            "closes": [c.id for c in closes]
+        }
+
+        today = date.today().isoformat()
+        latest_path = os.path.join(BACKUP_DIR, "caja_daily_latest.json")
+        dated_path = os.path.join(BACKUP_DIR, f"caja_{today}.json")
+
+        raw = json.dumps(payload, indent=2)
+
+        with open(latest_path, "w", encoding="utf-8") as f:
+            f.write(raw)
+
+        with open(dated_path, "w", encoding="utf-8") as f:
+            f.write(raw)
+
+        return latest_path, dated_path
+
+    except Exception as e:
+        print("Backup error:", e)
+        return None, None
+
+
+def subir_backup_a_drive(path):
+    try:
+        scopes = ["https://www.googleapis.com/auth/drive.file"]
+
+        creds = service_account.Credentials.from_service_account_file(
+            GOOGLE_DRIVE_KEY_PATH,
+            scopes=scopes
+        )
+
+        service = build("drive", "v3", credentials=creds)
+
+        file_metadata = {
+            "name": os.path.basename(path),
+            "parents": [GOOGLE_DRIVE_FOLDER_ID]
+        }
+
+        media = MediaFileUpload(path, mimetype="application/json")
+
+        service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id"
+        ).execute()
+
+    except Exception as e:
+        print("Drive upload error:", e)
+
+
+def backup_caja_local_y_drive():
+    latest, dated = backup_caja_local()
+
+    if latest:
+        subir_backup_a_drive(latest)
+
+    if dated:
+        subir_backup_a_drive(dated)
+
 
 
 # ==============================
@@ -196,6 +279,12 @@ class Shift(db.Model):
     sales_pya = db.Column(db.Integer, default=0)
     sales_rappi = db.Column(db.Integer, default=0)
     sales_apps = db.Column(db.Integer, default=0)  # legacy
+
+    # Draft persistente de la calculadora de delivery
+    delivery_data_json = db.Column(db.Text)
+    hour_shift = db.Column(db.String(10))
+    hour_in = db.Column(db.String(5))
+    hour_out = db.Column(db.String(5))
 
     status = db.Column(db.String(10), default="OPEN")  # OPEN / CLOSED
     closed_at = db.Column(db.DateTime)
@@ -304,14 +393,33 @@ def is_sqlite():
     return uri.startswith("sqlite:")
 
 def ensure_columns_shift():
-    cols = _table_cols("shift")
+    if is_sqlite():
+        cols = _table_cols("shift")
+        with db.engine.begin() as conn:
+            if "sales_pya" not in cols:
+                conn.exec_driver_sql("ALTER TABLE shift ADD COLUMN sales_pya INTEGER DEFAULT 0")
+            if "sales_rappi" not in cols:
+                conn.exec_driver_sql("ALTER TABLE shift ADD COLUMN sales_rappi INTEGER DEFAULT 0")
+            if "sales_apps" not in cols:
+                conn.exec_driver_sql("ALTER TABLE shift ADD COLUMN sales_apps INTEGER DEFAULT 0")
+            if "delivery_data_json" not in cols:
+                conn.exec_driver_sql("ALTER TABLE shift ADD COLUMN delivery_data_json TEXT")
+            if "hour_shift" not in cols:
+                conn.exec_driver_sql("ALTER TABLE shift ADD COLUMN hour_shift TEXT")
+            if "hour_in" not in cols:
+                conn.exec_driver_sql("ALTER TABLE shift ADD COLUMN hour_in TEXT")
+            if "hour_out" not in cols:
+                conn.exec_driver_sql("ALTER TABLE shift ADD COLUMN hour_out TEXT")
+        return
+
     with db.engine.begin() as conn:
-        if "sales_pya" not in cols:
-            conn.exec_driver_sql("ALTER TABLE shift ADD COLUMN sales_pya INTEGER DEFAULT 0")
-        if "sales_rappi" not in cols:
-            conn.exec_driver_sql("ALTER TABLE shift ADD COLUMN sales_rappi INTEGER DEFAULT 0")
-        if "sales_apps" not in cols:
-            conn.exec_driver_sql("ALTER TABLE shift ADD COLUMN sales_apps INTEGER DEFAULT 0")
+        conn.exec_driver_sql('ALTER TABLE shift ADD COLUMN IF NOT EXISTS sales_pya INTEGER DEFAULT 0;')
+        conn.exec_driver_sql('ALTER TABLE shift ADD COLUMN IF NOT EXISTS sales_rappi INTEGER DEFAULT 0;')
+        conn.exec_driver_sql('ALTER TABLE shift ADD COLUMN IF NOT EXISTS sales_apps INTEGER DEFAULT 0;')
+        conn.exec_driver_sql('ALTER TABLE shift ADD COLUMN IF NOT EXISTS delivery_data_json TEXT;')
+        conn.exec_driver_sql('ALTER TABLE shift ADD COLUMN IF NOT EXISTS hour_shift VARCHAR(10);')
+        conn.exec_driver_sql('ALTER TABLE shift ADD COLUMN IF NOT EXISTS hour_in VARCHAR(5);')
+        conn.exec_driver_sql('ALTER TABLE shift ADD COLUMN IF NOT EXISTS hour_out VARCHAR(5);')
 
 def ensure_columns_shift_close():
     cols = _table_cols("shift_close")
@@ -390,6 +498,7 @@ def seed_users():
             if name not in existing:
                 db.session.add(User(username=name, role="admin"))
         db.session.commit()
+        backup_caja_local_y_drive()
     except IntegrityError:
         db.session.rollback()
 
@@ -400,14 +509,16 @@ def init_db():
             from sqlalchemy import text
             db.session.execute(text("CREATE SCHEMA IF NOT EXISTS caja"))
             db.session.commit()
-
+    
         db.create_all()
         ensure_columns_user_mobile()
+        ensure_columns_shift()
         if is_sqlite():
-            ensure_columns_shift()
             ensure_columns_shift_close()
             ensure_columns_attendance()
         seed_users()
+        
+        backup_caja_local_y_drive()
 
 # Ejecutar init al levantar (Render / gunicorn y local)
 init_db()
@@ -643,6 +754,60 @@ def diff_minutes(t_in: str, t_out: str):
     if mi is None or mo is None:
         return None
     return mo - mi
+
+DELIVERY_SHIFT_PRESETS = {
+    "MORNING": {"hour_in": "08:55", "hour_out": "12:50"},
+    "AFTERNOON": {"hour_in": "16:55", "hour_out": "20:50"},
+}
+
+def delivery_hours_decimal(hour_in: Optional[str], hour_out: Optional[str]) -> float:
+    mins = diff_minutes(hour_in or "", hour_out or "")
+    if mins is None or mins < 0:
+        return 0.0
+    return round(mins / 60.0, 2)
+
+
+def build_delivery_payload(shift_row: Shift) -> dict:
+    payload = {
+        "rates": [1500, 2000, 2500, 3000, 2500],
+        "qtys": [0, 0, 0, 0, 0],
+        "consume_amount": 0,
+        "consume_note": "",
+        "hour_shift": shift_row.hour_shift or "MORNING",
+        "hour_in": shift_row.hour_in or DELIVERY_SHIFT_PRESETS["MORNING"]["hour_in"],
+        "hour_out": shift_row.hour_out or DELIVERY_SHIFT_PRESETS["MORNING"]["hour_out"],
+    }
+    if shift_row.delivery_data_json:
+        try:
+            raw = json.loads(shift_row.delivery_data_json)
+            if isinstance(raw, dict):
+                payload.update(raw)
+        except Exception:
+            pass
+
+    hour_shift = (payload.get("hour_shift") or shift_row.hour_shift or "MORNING").strip().upper()
+    if hour_shift not in DELIVERY_SHIFT_PRESETS:
+        hour_shift = "MORNING"
+    payload["hour_shift"] = hour_shift
+
+    payload["hour_in"] = (payload.get("hour_in") or shift_row.hour_in or DELIVERY_SHIFT_PRESETS[hour_shift]["hour_in"])
+    payload["hour_out"] = (payload.get("hour_out") or shift_row.hour_out or DELIVERY_SHIFT_PRESETS[hour_shift]["hour_out"])
+
+    rates = payload.get("rates") if isinstance(payload.get("rates"), list) else None
+    if not rates or len(rates) != 5:
+        payload["rates"] = [1500, 2000, 2500, 3000, 2500]
+    qtys = payload.get("qtys") if isinstance(payload.get("qtys"), list) else None
+    if not qtys or len(qtys) != 5:
+        payload["qtys"] = [0, 0, 0, 0, 0]
+
+    try:
+        payload["consume_amount"] = int(float(payload.get("consume_amount") or 0))
+    except Exception:
+        payload["consume_amount"] = 0
+    payload["consume_note"] = str(payload.get("consume_note") or "")
+    payload["qtys"][4] = delivery_hours_decimal(payload["hour_in"], payload["hour_out"])
+    return payload
+
 
 def fmt_minutes(m):
     if m is None:
@@ -1357,6 +1522,7 @@ def setup_password():
             else:
                 u.password_hash = generate_password_hash(p1)
                 db.session.commit()
+                backup_caja_local_y_drive()
                 msg = "Contrasena guardada. Ya podes ingresar."
     return render_template_string(SETUP_HTML, users=users, err=err, msg=msg)
 
@@ -1508,6 +1674,7 @@ def admin_pin_mobile():
                 raise ValueError("Usuario invalido.")
             set_mobile_pin(u, pin)
             db.session.commit()
+            backup_caja_local_y_drive()
             msg = f"PIN actualizado para {u.username}."
         except Exception as ex:
             db.session.rollback()
@@ -1841,6 +2008,7 @@ def admin_fix_responsables():
             fixed += 1
     if fixed:
         db.session.commit()
+    backup_caja_local_y_drive()
     return render_template_string(
         BASE_MSG_HTML,
         base_css=BASE_CSS,
@@ -1893,15 +2061,18 @@ def m_login():
                         u.mobile_pin_locked_until = datetime.utcnow() + timedelta(minutes=10)
                         u.mobile_pin_attempts = 0
                         db.session.commit()
+                        backup_caja_local_y_drive()
                         err = "Demasiados intentos. Bloqueado 10 min."
                     else:
                         db.session.commit()
+                        backup_caja_local_y_drive()
                         err = "PIN incorrecto."
                 else:
                     # OK
                     u.mobile_pin_attempts = 0
                     u.mobile_pin_locked_until = None
                     db.session.commit()
+                    backup_caja_local_y_drive()
 
                     session[MOBILE_SESSION_KEY] = u.id
                     session.pop("m_fail", None)
@@ -1950,6 +2121,7 @@ def m_adv_new():
             )
             db.session.add(ar)
             db.session.commit()
+            backup_caja_local_y_drive()
             msg = "Solicitud enviada "
         except Exception as ex:
             db.session.rollback()
@@ -1996,6 +2168,7 @@ def m_adv_decide(adv_id: int):
     if ar.status == "APPROVED":
         sync_advance_to_attendance(ar)
     db.session.commit()
+    backup_caja_local_y_drive()
     return redirect(url_for("m_adv_admin"))
 
 
@@ -2517,7 +2690,29 @@ SHIFT_HTML = """
       <td>
         <div class="money-input-wrap">$ <input type="number" class="del-rate" data-row="4" value="2500"></div>
       </td>
-      <td><input type="number" class="del-qty qty-input" data-row="4" value="0" min="0" step="0.01"></td>
+      <td>
+        <div style="display:grid; gap:8px;">
+          <div>
+            <label class="muted" for="deliveryHourShift">Turno</label><br>
+            <select id="deliveryHourShift">
+              <option value="MORNING">Mañana</option>
+              <option value="AFTERNOON">Tarde</option>
+            </select>
+          </div>
+          <div class="row" style="gap:8px; align-items:end;">
+            <div>
+              <label class="muted" for="deliveryHourIn">Entrada</label><br>
+              <input type="time" id="deliveryHourIn" class="qty-input" style="width:120px;">
+            </div>
+            <div>
+              <label class="muted" for="deliveryHourOut">Salida</label><br>
+              <input type="time" id="deliveryHourOut" class="qty-input" style="width:120px;">
+            </div>
+          </div>
+          <div class="muted">Horas calculadas automáticamente: <b id="deliveryHoursLabel">0.00</b></div>
+          <input type="number" class="del-qty qty-input" data-row="4" value="0" min="0" step="0.01" readonly>
+        </div>
+      </td>
       <td class="del-total" data-row="4">$ 0</td>
     </tr>
     <tr class="delivery-total-row">
@@ -2538,7 +2733,7 @@ SHIFT_HTML = """
         <input type="text" id="deliveryConsumeNote" placeholder="Ej: gaseosa, cena, peaje, etc.">
       </div>
     </div>
-    <div class="muted" style="margin-top:8px;">El monto de consumos se descuenta del total de viajes / horas. En Horas podes cargar decimales, por ejemplo 3.75.</div>
+    <div class="muted" style="margin-top:8px;">El monto de consumos se descuenta del total de viajes / horas. Las horas se calculan solas según turno, entrada y salida.</div>
   </div>
 
   <div class="delivery-impact-box">
@@ -2668,13 +2863,74 @@ SHIFT_HTML = """
     const expenseAmountEl = document.getElementById("expenseAmount");
     const expenseNoteEl = document.getElementById("expenseNote");
 
+    const deliveryPresets = {{ delivery_shift_presets_json|safe }};
+    const deliveryInitialData = {{ delivery_payload_json|safe }};
+    const deliveryHourShiftEl = document.getElementById("deliveryHourShift");
+    const deliveryHourInEl = document.getElementById("deliveryHourIn");
+    const deliveryHourOutEl = document.getElementById("deliveryHourOut");
+    const deliveryHoursLabelEl = document.getElementById("deliveryHoursLabel");
+
     function getDeliveryDefaults(){
-      return {
+      return JSON.parse(JSON.stringify(deliveryInitialData || {
         rates: [1500, 2000, 2500, 3000, 2500],
         qtys: [0, 0, 0, 0, 0],
         consume_amount: 0,
-        consume_note: ""
-      };
+        consume_note: "",
+        hour_shift: "MORNING",
+        hour_in: "08:55",
+        hour_out: "12:50"
+      }));
+    }
+
+    function calcHourQty(){
+      const hIn = (deliveryHourInEl && deliveryHourInEl.value) ? deliveryHourInEl.value : "";
+      const hOut = (deliveryHourOutEl && deliveryHourOutEl.value) ? deliveryHourOutEl.value : "";
+      if(!hIn || !hOut) return 0;
+      const [ih, im] = hIn.split(":").map(v => parseInt(v, 10));
+      const [oh, om] = hOut.split(":").map(v => parseInt(v, 10));
+      if([ih, im, oh, om].some(v => isNaN(v))) return 0;
+      const mins = ((oh * 60 + om) - (ih * 60 + im));
+      if(mins < 0) return 0;
+      return Math.round((mins / 60) * 100) / 100;
+    }
+
+    function updateHoursFromTimes(){
+      const hours = calcHourQty();
+      if(deliveryQtyEls[4]) deliveryQtyEls[4].value = hours.toFixed(2);
+      if(deliveryHoursLabelEl) deliveryHoursLabelEl.textContent = hours.toFixed(2) + " hs";
+      return hours;
+    }
+
+    function applyPresetForShift(force=false){
+      if(!deliveryHourShiftEl) return;
+      const shiftKey = deliveryHourShiftEl.value === "AFTERNOON" ? "AFTERNOON" : "MORNING";
+      const preset = deliveryPresets[shiftKey] || deliveryPresets["MORNING"];
+      if(force || !deliveryHourInEl.value) deliveryHourInEl.value = preset.hour_in || "";
+      if(force || !deliveryHourOutEl.value) deliveryHourOutEl.value = preset.hour_out || "";
+      updateHoursFromTimes();
+    }
+
+    let deliverySaveTimer = null;
+    function persistDeliveryCalc(){
+      saveDeliveryCalc();
+      if(deliverySaveTimer) clearTimeout(deliverySaveTimer);
+      deliverySaveTimer = setTimeout(async () => {
+        try{
+          await fetch("{{ url_for('save_delivery_draft', id=s.id) }}", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+              rates: deliveryRateEls.map(el => toInt(el.value)),
+              qtys: deliveryQtyEls.map((el, i) => i === 4 ? toNum(el.value) : toInt(el.value)),
+              consume_amount: toInt(deliveryConsumeAmountEl ? deliveryConsumeAmountEl.value : 0),
+              consume_note: deliveryConsumeNoteEl ? (deliveryConsumeNoteEl.value || "") : "",
+              hour_shift: deliveryHourShiftEl ? deliveryHourShiftEl.value : "MORNING",
+              hour_in: deliveryHourInEl ? deliveryHourInEl.value : "",
+              hour_out: deliveryHourOutEl ? deliveryHourOutEl.value : ""
+            })
+          });
+        }catch(e){}
+      }, 350);
     }
 
     function saveDeliveryCalc(){
@@ -2683,7 +2939,10 @@ SHIFT_HTML = """
           rates: deliveryRateEls.map(el => toInt(el.value)),
           qtys: deliveryQtyEls.map((el, i) => i === 4 ? toNum(el.value) : toInt(el.value)),
           consume_amount: toInt(deliveryConsumeAmountEl ? deliveryConsumeAmountEl.value : 0),
-          consume_note: deliveryConsumeNoteEl ? (deliveryConsumeNoteEl.value || "") : ""
+          consume_note: deliveryConsumeNoteEl ? (deliveryConsumeNoteEl.value || "") : "",
+          hour_shift: deliveryHourShiftEl ? deliveryHourShiftEl.value : "MORNING",
+          hour_in: deliveryHourInEl ? deliveryHourInEl.value : "",
+          hour_out: deliveryHourOutEl ? deliveryHourOutEl.value : ""
         };
         localStorage.setItem(deliveryStorageKey, JSON.stringify(payload));
       }catch(e){}
@@ -2693,14 +2952,7 @@ SHIFT_HTML = """
       const defaults = getDeliveryDefaults();
       try{
         const raw = localStorage.getItem(deliveryStorageKey);
-        if(!raw){
-          deliveryRateEls.forEach((el, i) => el.value = defaults.rates[i]);
-          deliveryQtyEls.forEach((el, i) => el.value = defaults.qtys[i]);
-          if(deliveryConsumeAmountEl) deliveryConsumeAmountEl.value = defaults.consume_amount;
-          if(deliveryConsumeNoteEl) deliveryConsumeNoteEl.value = defaults.consume_note;
-          return;
-        }
-        const payload = JSON.parse(raw) || {};
+        const payload = raw ? (JSON.parse(raw) || {}) : defaults;
         deliveryRateEls.forEach((el, i) => {
           el.value = Array.isArray(payload.rates) && payload.rates[i] != null ? payload.rates[i] : defaults.rates[i];
         });
@@ -2713,15 +2965,30 @@ SHIFT_HTML = """
         if(deliveryConsumeNoteEl){
           deliveryConsumeNoteEl.value = payload.consume_note != null ? payload.consume_note : defaults.consume_note;
         }
+        if(deliveryHourShiftEl){
+          deliveryHourShiftEl.value = payload.hour_shift || defaults.hour_shift || "MORNING";
+        }
+        if(deliveryHourInEl){
+          deliveryHourInEl.value = payload.hour_in || defaults.hour_in || "";
+        }
+        if(deliveryHourOutEl){
+          deliveryHourOutEl.value = payload.hour_out || defaults.hour_out || "";
+        }
+        updateHoursFromTimes();
       }catch(e){
         deliveryRateEls.forEach((el, i) => el.value = defaults.rates[i]);
         deliveryQtyEls.forEach((el, i) => el.value = defaults.qtys[i]);
         if(deliveryConsumeAmountEl) deliveryConsumeAmountEl.value = defaults.consume_amount;
         if(deliveryConsumeNoteEl) deliveryConsumeNoteEl.value = defaults.consume_note;
+        if(deliveryHourShiftEl) deliveryHourShiftEl.value = defaults.hour_shift || "MORNING";
+        if(deliveryHourInEl) deliveryHourInEl.value = defaults.hour_in || "";
+        if(deliveryHourOutEl) deliveryHourOutEl.value = defaults.hour_out || "";
+        updateHoursFromTimes();
       }
     }
 
     function recalcDeliveryCalc(){
+      updateHoursFromTimes();
       let grand = 0;
       deliveryRateEls.forEach((el, i) => {
         const rate = toNum(el.value);
@@ -2769,12 +3036,19 @@ SHIFT_HTML = """
       }
     });
 
-    [...deliveryRateEls, ...deliveryQtyEls, deliveryConsumeAmountEl, deliveryConsumeNoteEl].filter(Boolean).forEach(el => {
+    [...deliveryRateEls, ...deliveryQtyEls, deliveryConsumeAmountEl, deliveryConsumeNoteEl, deliveryHourInEl, deliveryHourOutEl].filter(Boolean).forEach(el => {
       el.addEventListener("input", () => {
-        saveDeliveryCalc();
+        persistDeliveryCalc();
         recalcDeliveryCalc();
       });
     });
+    if(deliveryHourShiftEl){
+      deliveryHourShiftEl.addEventListener("change", () => {
+        applyPresetForShift(true);
+        persistDeliveryCalc();
+        recalcDeliveryCalc();
+      });
+    }
 
     if(applyDeliveryExpenseBtn){
       applyDeliveryExpenseBtn.addEventListener("click", () => {
@@ -2806,7 +3080,7 @@ SHIFT_HTML = """
           expenseNoteEl.value = note;
         }
 
-        saveDeliveryCalc();
+        persistDeliveryCalc();
         expenseFormEl.submit();
       });
     }
@@ -2852,6 +3126,7 @@ SHIFT_HTML = """
 
     // Restore draft after page reload (ej: al agregar egresos)
     loadDeliveryCalc();
+    applyPresetForShift(false);
     recalcDeliveryCalc();
     loadDraft();
     recalc();
@@ -3193,6 +3468,7 @@ def open_shift(turn):
                 CashExpense.query.filter_by(shift_id=existing.id).delete()
                 db.session.delete(existing)
                 db.session.commit()
+                backup_caja_local_y_drive()
             except Exception:
                 db.session.rollback()
             existing = None
@@ -3220,6 +3496,7 @@ def open_shift(turn):
         s = Shift(day=day_obj, turn=turn, responsible=responsible, opening_cash=int(opening_cash))
         db.session.add(s)
         db.session.commit()
+        backup_caja_local_y_drive()
         return redirect(url_for("shift", id=s.id, d=d))
 
     return render_template_string(
@@ -3251,6 +3528,8 @@ def shift(id):
     u = current_user()
     can_edit = bool(close_row) and can_edit_close(u, close_row)
 
+    delivery_payload = build_delivery_payload(s)
+
     return render_template_string(
         SHIFT_HTML,
         base_css=BASE_CSS,
@@ -3264,8 +3543,77 @@ def shift(id):
         ingreso_neto=ingreso_neto,
         ingreso_bruto=ingreso_bruto,
         efectivo_disponible=efectivo_disponible,
-        can_edit=can_edit
+        can_edit=can_edit,
+        delivery_payload_json=json.dumps(delivery_payload),
+        delivery_shift_presets_json=json.dumps(DELIVERY_SHIFT_PRESETS)
     )
+
+@app.route("/caja/shift/<int:id>/delivery_draft", methods=["POST"])
+@login_required
+def save_delivery_draft(id):
+    s = Shift.query.get_or_404(id)
+    if s.status != "OPEN":
+        return {"ok": False, "error": "Turno cerrado"}, 400
+
+    payload = request.get_json(silent=True) or {}
+    hour_shift = (payload.get("hour_shift") or "MORNING").strip().upper()
+    if hour_shift not in DELIVERY_SHIFT_PRESETS:
+        hour_shift = "MORNING"
+
+    hour_in = (payload.get("hour_in") or "").strip()
+    hour_out = (payload.get("hour_out") or "").strip()
+    if hour_in and not valid_time_str(hour_in):
+        return {"ok": False, "error": "Hora de entrada invalida"}, 400
+    if hour_out and not valid_time_str(hour_out):
+        return {"ok": False, "error": "Hora de salida invalida"}, 400
+
+    rates = payload.get("rates") if isinstance(payload.get("rates"), list) else [1500, 2000, 2500, 3000, 2500]
+    qtys = payload.get("qtys") if isinstance(payload.get("qtys"), list) else [0, 0, 0, 0, 0]
+    rates = (rates + [0, 0, 0, 0, 0])[:5]
+    qtys = (qtys + [0, 0, 0, 0, 0])[:5]
+
+    safe_rates = []
+    for v in rates:
+        try:
+            safe_rates.append(int(float(v or 0)))
+        except Exception:
+            safe_rates.append(0)
+
+    hours_qty = delivery_hours_decimal(hour_in, hour_out)
+    safe_qtys = []
+    for i, v in enumerate(qtys):
+        if i == 4:
+            safe_qtys.append(hours_qty)
+        else:
+            try:
+                safe_qtys.append(int(float(v or 0)))
+            except Exception:
+                safe_qtys.append(0)
+
+    try:
+        consume_amount = int(float(payload.get("consume_amount") or 0))
+    except Exception:
+        consume_amount = 0
+    consume_note = str(payload.get("consume_note") or "")[:200]
+
+    clean_payload = {
+        "rates": safe_rates,
+        "qtys": safe_qtys,
+        "consume_amount": consume_amount,
+        "consume_note": consume_note,
+        "hour_shift": hour_shift,
+        "hour_in": hour_in,
+        "hour_out": hour_out,
+    }
+
+    s.hour_shift = hour_shift
+    s.hour_in = hour_in or None
+    s.hour_out = hour_out or None
+    s.delivery_data_json = json.dumps(clean_payload, ensure_ascii=False)
+    db.session.commit()
+    backup_caja_local_y_drive()
+    return {"ok": True, "hours": safe_qtys[4]}
+
 
 @app.route("/caja/shift/<int:id>/sales", methods=["POST"])
 @login_required
@@ -3281,6 +3629,7 @@ def sales(id):
     s.sales_rappi = to_int(request.form.get("sales_rappi"))
 
     db.session.commit()
+    backup_caja_local_y_drive()
     return redirect(url_for("shift", id=id, d=d))
 
 @app.route("/caja/shift/<int:id>/expense", methods=["POST"])
@@ -3304,6 +3653,7 @@ def expense(id):
     e = CashExpense(shift_id=id, category=category, amount=int(amount), note=note or None)
     db.session.add(e)
     db.session.commit()
+    backup_caja_local_y_drive()
     return redirect(url_for("shift", id=id, d=d))
 
 
@@ -3351,6 +3701,7 @@ def close_shift(id):
     s.closed_at = datetime.utcnow()
     db.session.add(c)
     db.session.commit()
+    backup_caja_local_y_drive()
     return redirect(url_for("caja_index", d=d))
 
 
@@ -3459,6 +3810,7 @@ def edit_all(id):
         close_row.edit_reason = reason
 
         db.session.commit()
+        backup_caja_local_y_drive()
         return redirect(url_for("shift", id=id, d=d))
 
     return render_template_string(
@@ -3542,6 +3894,10 @@ def export_caja_json():
             "sales_mp": int(s.sales_mp or 0),
             "sales_pya": int(getattr(s, "sales_pya", 0) or 0),
             "sales_rappi": int(getattr(s, "sales_rappi", 0) or 0),
+            "delivery_data_json": s.delivery_data_json,
+            "hour_shift": s.hour_shift,
+            "hour_in": s.hour_in,
+            "hour_out": s.hour_out,
             "status": s.status,
             "closed_at": s.closed_at.isoformat() if s.closed_at else None,
         })
@@ -3755,6 +4111,10 @@ def import_caja():
                         opening_cash=opening_cash,
                         sales_cash=sales_cash, sales_mp=sales_mp,
                         sales_pya=sales_pya, sales_rappi=sales_rappi,
+                        delivery_data_json=None,
+                        hour_shift=None,
+                        hour_in=None,
+                        hour_out=None,
                         status="CLOSED", closed_at=datetime.utcnow()
                     )
                     db.session.add(s)
@@ -3787,6 +4147,7 @@ def import_caja():
                     imported += 1
 
                 db.session.commit()
+                backup_caja_local_y_drive()
                 msg = f"Import OK. Turnos importados: {imported}. Reemplazados: {replaced}."
 
             except Exception as ex:
@@ -3923,6 +4284,10 @@ def import_caja_json():
                         sales_mp=sales_mp,
                         sales_pya=sales_pya,
                         sales_rappi=sales_rappi,
+                        delivery_data_json=s.get("delivery_data_json"),
+                        hour_shift=s.get("hour_shift"),
+                        hour_in=s.get("hour_in"),
+                        hour_out=s.get("hour_out"),
                         status=shift_status,
                         closed_at=datetime.utcnow() if shift_status == "CLOSED" else None
                     )
@@ -3990,6 +4355,7 @@ def import_caja_json():
                     imported += 1
 
                 db.session.commit()
+                backup_caja_local_y_drive()
                 msg = f"Import JSON OK. Importados: {imported}. Reemplazados: {replaced}. Omitidos (skip): {skipped}."
             except Exception as ex:
                 db.session.rollback()
@@ -4135,6 +4501,7 @@ def att_config():
                     cfg.week0_map = make_week0_map_str(m)
                     cfg.created_by = cfg.created_by or u.username
                 db.session.commit()
+                backup_caja_local_y_drive()
                 msg = "Rotacion guardada."
             elif action == "add_vac":
                 emp = (request.form.get("emp") or "").strip()
@@ -4146,6 +4513,7 @@ def att_config():
                     start, end = end, start
                 db.session.add(Vacation(employee=emp, start_day=start, end_day=end))
                 db.session.commit()
+                backup_caja_local_y_drive()
                 msg = "Vacaciones agregadas."
             elif action == "del_vac":
                 vid = int(request.form.get("id") or 0)
@@ -4153,6 +4521,7 @@ def att_config():
                 if v:
                     db.session.delete(v)
                     db.session.commit()
+                    backup_caja_local_y_drive()
                 msg = "Vacaciones borradas."
         except Exception as ex:
             db.session.rollback()
@@ -4566,6 +4935,7 @@ def asistencia():
                 h = ""
             set_holiday_type(day_obj, h)
             db.session.commit()
+            backup_caja_local_y_drive()
             msg = "Feriado aplicado."
             return redirect(url_for("asistencia", d=d, emp=empf, start=start, end=end, novf=novf))
         except Exception as ex:
@@ -4680,6 +5050,7 @@ def asistencia():
                     db.session.add(AttendanceConsumption(attendance_id=row.id, idx=i, item=item, amount=amount))
 
             db.session.commit()
+            backup_caja_local_y_drive()
             msg = "Guardado."
             return redirect(url_for("asistencia", d=d, emp=empf, start=start, end=end, novf=novf))
 
@@ -4794,6 +5165,7 @@ def asistencia():
 
     if auto_fix_commit:
         db.session.commit()
+    backup_caja_local_y_drive()
     summary = attendance_summary_rows(start_date, end_date, empf, novf)
 
     # Totales del periodo filtrado
@@ -5073,6 +5445,7 @@ def import_asistencia():
                     imported += 1
 
                 db.session.commit()
+                backup_caja_local_y_drive()
                 msg = f"Import OK. Registros: {imported}. Reemplazados: {replaced}."
             except Exception as ex:
                 db.session.rollback()
@@ -5229,6 +5602,7 @@ def import_asistencia_json():
                     set_holiday_type(d2, ht)
 
                 db.session.commit()
+                backup_caja_local_y_drive()
                 msg = f"Import JSON OK. Registros: {imported}. Reemplazados: {replaced}. Omitidos (skip): {skipped}."
             except Exception as ex:
                 db.session.rollback()
