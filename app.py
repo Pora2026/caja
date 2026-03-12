@@ -5,8 +5,10 @@ from dotenv import load_dotenv
 load_dotenv()  # lee .env local si existe
 from functools import wraps
 from io import BytesIO
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, UTC
 from typing import Optional, Tuple
+
+from services.backup_service import perform_backup
 
 from flask import (
     Flask, request, redirect, url_for, render_template_string,
@@ -16,6 +18,7 @@ from flask import (
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.exc import IntegrityError
 from werkzeug.security import generate_password_hash, check_password_hash
+
 
 import hashlib
 
@@ -108,90 +111,47 @@ if uri.startswith("postgresql://"):
     
 db = SQLAlchemy(app)
 
-# ==============================
-# BACKUP AUTOMATICO CAJA
-# ==============================
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-BACKUP_DIR = os.path.join(BASE_DIR, "Backup")
-os.makedirs(BACKUP_DIR, exist_ok=True)
+GDRIVE_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbx_XqC6hSrA-zlzjRhVfDv93CGjMO5YhPJuzO3lQ5Djtzbln2zWONzcJIQ8R7KHyJsV/exec"
 
-GOOGLE_DRIVE_FOLDER_ID = "128rd1f2pEJWFtyY4EzAuCTq9PtiRUNMW"
-GOOGLE_DRIVE_KEY_PATH = os.path.join(BASE_DIR, "Clave Drive", "drive_key.json")
 
-def backup_caja_local():
+def backup_caja_payload():
     try:
         shifts = Shift.query.all()
         expenses = CashExpense.query.all()
         closes = ShiftClose.query.all()
 
-        payload = {
-            "exported_at": datetime.utcnow().isoformat(),
+        return {
+            "exported_at": datetime.now(UTC).isoformat(),
             "shifts": [s.id for s in shifts],
             "expenses": [e.id for e in expenses],
-            "closes": [c.id for c in closes]
+            "closes": [c.id for c in closes],
         }
-
-        today = date.today().isoformat()
-        latest_path = os.path.join(BACKUP_DIR, "caja_daily_latest.json")
-        dated_path = os.path.join(BACKUP_DIR, f"caja_{today}.json")
-
-        raw = json.dumps(payload, indent=2)
-
-        with open(latest_path, "w", encoding="utf-8") as f:
-            f.write(raw)
-
-        with open(dated_path, "w", encoding="utf-8") as f:
-            f.write(raw)
-
-        return latest_path, dated_path
-
     except Exception as e:
-        print("Backup error:", e)
-        return None, None
-
-
-def subir_backup_a_drive(path):
-    try:
-        scopes = ["https://www.googleapis.com/auth/drive.file"]
-
-        creds = service_account.Credentials.from_service_account_file(
-            GOOGLE_DRIVE_KEY_PATH,
-            scopes=scopes
-        )
-
-        service = build("drive", "v3", credentials=creds)
-
-        file_metadata = {
-            "name": os.path.basename(path),
-            "parents": [GOOGLE_DRIVE_FOLDER_ID]
+        print("Backup payload error:", e)
+        return {
+            "exported_at": datetime.now(UTC).isoformat(),
+            "error": str(e),
+            "shifts": [],
+            "expenses": [],
+            "closes": [],
         }
-
-        media = MediaFileUpload(path, mimetype="application/json")
-
-        service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id"
-        ).execute()
-
-    except Exception as e:
-        print("Drive upload error:", e)
 
 
 def backup_caja_local_y_drive():
-    latest, dated = backup_caja_local()
-
-    if latest:
-        subir_backup_a_drive(latest)
-
-    if dated:
-        subir_backup_a_drive(dated)
-
+    return perform_backup(
+        payload=backup_caja_payload(),
+        base_dir=BASE_DIR,
+        webhook_url=GDRIVE_WEBHOOK_URL,
+        prefix="caja",
+    )
 
 
 # ==============================
 # CONFIG
 # ==============================
+
 TURNS = [("MORNING", "Manana"), ("AFTERNOON", "Tarde")]
 TURN_NAMES = dict(TURNS)
 
@@ -807,7 +767,6 @@ def build_delivery_payload(shift_row: Shift) -> dict:
     payload["consume_note"] = str(payload.get("consume_note") or "")
     payload["qtys"][4] = delivery_hours_decimal(payload["hour_in"], payload["hour_out"])
     return payload
-
 
 def fmt_minutes(m):
     if m is None:
@@ -3613,7 +3572,6 @@ def save_delivery_draft(id):
     db.session.commit()
     backup_caja_local_y_drive()
     return {"ok": True, "hours": safe_qtys[4]}
-
 
 @app.route("/caja/shift/<int:id>/sales", methods=["POST"])
 @login_required
