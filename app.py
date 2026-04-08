@@ -14,6 +14,13 @@ from services.delivery_service import (
     build_delivery_payload,
     sanitize_delivery_payload,
 )
+from services.caja_service import (
+    calc_ending_calc,
+    calc_ingreso_bruto,
+    calc_ingreso_neto,
+    cash_bruto,
+    expenses_total,
+)
 
 from flask import (
     Flask, request, redirect, url_for, render_template_string,
@@ -810,68 +817,6 @@ def extract_consumptions_and_clean_notes(notes: str, max_items: int = 5):
 
     notes_clean = " / ".join(cleaned_parts).strip()
     return cons, (notes_clean if notes_clean else None)
-
-# ==============================
-# CAJA UTILS
-# ==============================
-def expenses_total(shift_id: int) -> int:
-    return sum(e.amount for e in CashExpense.query.filter_by(shift_id=shift_id).all())
-
-
-def cash_final_value(s: Shift) -> int:
-    """Caja final (efectivo que queda en la caja) guardada en el cierre.
-    - Para turnos OPEN (aun sin cierre), devuelve 0.
-    """
-    try:
-        sid = getattr(s, "id", None)
-        if not sid:
-            return 0
-        c = ShiftClose.query.filter_by(shift_id=sid).first()
-        return int(c.ending_cash or 0) if c else 0
-    except Exception:
-        return 0
-
-def cash_bruto(s: Shift, cash_final: Optional[int] = None) -> int:
-    """Efectivo bruto = Retirado (efectivo total) + Caja final."""
-    retirado = int(s.sales_cash or 0)
-    if cash_final is None:
-        cash_final = cash_final_value(s)
-    return retirado + int(cash_final or 0)
-
-def cash_neto(s: Shift) -> int:
-    """Efectivo neto = Retirado - Caja inicial.
-    Nota: puede ser negativo si Retirado < Caja inicial (ej: faltante / error de carga).
-    """
-    return int(s.sales_cash or 0) - int(s.opening_cash or 0)
-
-def calc_ingreso_bruto(s: Shift, egresos: int, cash_final: Optional[int] = None) -> int:
-    """Ingreso total (bruto) =
-       (Efectivo bruto + MP + PedidosYa + Rappi) + Egresos
-       donde Efectivo bruto = Retirado + Caja final.
-    """
-    return (
-        cash_bruto(s, cash_final=cash_final) +
-        int(s.sales_mp or 0) +
-        int(getattr(s, "sales_pya", 0) or 0) +
-        int(getattr(s, "sales_rappi", 0) or 0) +
-        int(egresos or 0)
-    )
-
-def calc_ingreso_neto(s: Shift, egresos: Optional[int] = None, cash_final: Optional[int] = None) -> int:
-    """Ingreso neto = Ingreso total (bruto) - Egresos total."""
-    if egresos is None:
-        try:
-            egresos = expenses_total(int(s.id))
-        except Exception:
-            egresos = 0
-    return calc_ingreso_bruto(s, int(egresos or 0), cash_final=cash_final) - int(egresos or 0)
-
-def calc_ending_calc(cash_final: int, withdrawn: int) -> int:
-    """Compatibilidad legacy.
-    Antes: caja final teorica = efectivo bruto - retirado.
-    Ahora: la Caja final se carga manualmente, por lo que la 'teorica' coincide con la real.
-    """
-    return int(cash_final or 0)
 
 
 def prev_turn_of(day_obj: date, turn_code: str):
@@ -2142,10 +2087,10 @@ def get_caja_summary(limit=200, start: Optional[date]=None, end: Optional[date]=
     q = q.order_by(Shift.day.desc(), Shift.turn.asc()).limit(limit).all()
 
     for s, c in q:
-        exp = expenses_total(s.id)
+        exp = expenses_total(s.id, CashExpense)
         cash_final = int(c.ending_cash or 0)
-        bruto = calc_ingreso_bruto(s, exp, cash_final=cash_final)
-        neto = calc_ingreso_neto(s, egresos=exp, cash_final=cash_final)
+        bruto = calc_ingreso_bruto(s, exp, ShiftClose, cash_final=cash_final)
+        neto = calc_ingreso_neto(s, ShiftClose, CashExpense, egresos=exp, cash_final=cash_final)
 
         rows.append({
             "day": s.day.isoformat(),
@@ -2156,7 +2101,7 @@ def get_caja_summary(limit=200, start: Optional[date]=None, end: Optional[date]=
             "opening_cash": int(s.opening_cash or 0),
             "retirado": int(s.sales_cash or 0),
             "cash_final": cash_final,
-            "sales_cash": int(cash_bruto(s, cash_final=cash_final)),
+            "sales_cash": int(cash_bruto(s, ShiftClose, cash_final=cash_final)),
             "sales_mp": int(s.sales_mp or 0),
             "sales_pya": int(getattr(s, "sales_pya", 0) or 0),
             "sales_rappi": int(getattr(s, "sales_rappi", 0) or 0),
@@ -3283,7 +3228,7 @@ def caja_index():
             c = closes.get(s.id)
             cash_final = int(getattr(c, 'ending_cash', 0) or 0) if c else 0
             eg = expenses_total(s.id)
-            ventas_netas_map[s.id] = int(calc_ingreso_neto(s, egresos=eg, cash_final=cash_final))
+            ventas_netas_map[s.id] = int(calc_ingreso_neto(s, ShiftClose, CashExpense, egresos=eg, cash_final=cash_final))
             c = closes.get(s.id)
             efectivo_disp_map[s.id] = int(s.sales_cash or 0)
 
@@ -3429,10 +3374,10 @@ def shift(id):
     expenses = CashExpense.query.filter_by(shift_id=id).order_by(CashExpense.created_at.asc()).all()
     close_row = ShiftClose.query.filter_by(shift_id=id).first()
 
-    egresos_total = expenses_total(id)
+    egresos_total = expenses_total(id, CashExpense)
     cash_final = int(getattr(close_row, 'ending_cash', 0) or 0) if close_row else 0
-    ingreso_bruto = calc_ingreso_bruto(s, egresos_total, cash_final=cash_final)
-    ingreso_neto = calc_ingreso_neto(s, egresos=egresos_total, cash_final=cash_final)
+    ingreso_bruto = calc_ingreso_bruto(s, egresos_total, ShiftClose, cash_final=cash_final)
+    ingreso_neto = calc_ingreso_neto(s, ShiftClose, CashExpense, egresos=egresos_total, cash_final=cash_final)
 
     efectivo_disponible = int(s.sales_cash or 0)
 
@@ -3761,7 +3706,7 @@ def export_caja_json():
             "opening_cash": int(s.opening_cash or 0),
             "retirado": int(s.sales_cash or 0),
             "cash_final": cash_final,
-            "sales_cash": int(cash_bruto(s, cash_final=cash_final)),
+            "sales_cash": int(cash_bruto(s, ShiftClose, cash_final=cash_final)),
             "sales_mp": int(s.sales_mp or 0),
             "sales_pya": int(getattr(s, "sales_pya", 0) or 0),
             "sales_rappi": int(getattr(s, "sales_rappi", 0) or 0),
