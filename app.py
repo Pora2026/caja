@@ -9,6 +9,11 @@ from datetime import date, datetime, timedelta, UTC
 from typing import Optional, Tuple
 
 from services.backup_service import perform_backup
+from services.delivery_service import (
+    DELIVERY_SHIFT_PRESETS,
+    build_delivery_payload,
+    sanitize_delivery_payload,
+)
 
 from flask import (
     Flask, request, redirect, url_for, render_template_string,
@@ -714,59 +719,6 @@ def diff_minutes(t_in: str, t_out: str):
     if mi is None or mo is None:
         return None
     return mo - mi
-
-DELIVERY_SHIFT_PRESETS = {
-    "MORNING": {"hour_in": "08:55", "hour_out": "12:50"},
-    "AFTERNOON": {"hour_in": "16:55", "hour_out": "20:50"},
-}
-
-def delivery_hours_decimal(hour_in: Optional[str], hour_out: Optional[str]) -> float:
-    mins = diff_minutes(hour_in or "", hour_out or "")
-    if mins is None or mins < 0:
-        return 0.0
-    return round(mins / 60.0, 2)
-
-
-def build_delivery_payload(shift_row: Shift) -> dict:
-    payload = {
-        "rates": [1500, 2000, 2500, 3000, 2500],
-        "qtys": [0, 0, 0, 0, 0],
-        "consume_amount": 0,
-        "consume_note": "",
-        "hour_shift": shift_row.hour_shift or "MORNING",
-        "hour_in": shift_row.hour_in or DELIVERY_SHIFT_PRESETS["MORNING"]["hour_in"],
-        "hour_out": shift_row.hour_out or DELIVERY_SHIFT_PRESETS["MORNING"]["hour_out"],
-    }
-    if shift_row.delivery_data_json:
-        try:
-            raw = json.loads(shift_row.delivery_data_json)
-            if isinstance(raw, dict):
-                payload.update(raw)
-        except Exception:
-            pass
-
-    hour_shift = (payload.get("hour_shift") or shift_row.hour_shift or "MORNING").strip().upper()
-    if hour_shift not in DELIVERY_SHIFT_PRESETS:
-        hour_shift = "MORNING"
-    payload["hour_shift"] = hour_shift
-
-    payload["hour_in"] = (payload.get("hour_in") or shift_row.hour_in or DELIVERY_SHIFT_PRESETS[hour_shift]["hour_in"])
-    payload["hour_out"] = (payload.get("hour_out") or shift_row.hour_out or DELIVERY_SHIFT_PRESETS[hour_shift]["hour_out"])
-
-    rates = payload.get("rates") if isinstance(payload.get("rates"), list) else None
-    if not rates or len(rates) != 5:
-        payload["rates"] = [1500, 2000, 2500, 3000, 2500]
-    qtys = payload.get("qtys") if isinstance(payload.get("qtys"), list) else None
-    if not qtys or len(qtys) != 5:
-        payload["qtys"] = [0, 0, 0, 0, 0]
-
-    try:
-        payload["consume_amount"] = int(float(payload.get("consume_amount") or 0))
-    except Exception:
-        payload["consume_amount"] = 0
-    payload["consume_note"] = str(payload.get("consume_note") or "")
-    payload["qtys"][4] = delivery_hours_decimal(payload["hour_in"], payload["hour_out"])
-    return payload
 
 def fmt_minutes(m):
     if m is None:
@@ -3487,7 +3439,12 @@ def shift(id):
     u = current_user()
     can_edit = bool(close_row) and can_edit_close(u, close_row)
 
-    delivery_payload = build_delivery_payload(s)
+    delivery_payload = build_delivery_payload(
+        delivery_data_json=s.delivery_data_json,
+        hour_shift=s.hour_shift,
+        hour_in=s.hour_in,
+        hour_out=s.hour_out,
+    )
 
     return render_template_string(
         SHIFT_HTML,
@@ -3514,64 +3471,20 @@ def save_delivery_draft(id):
     if s.status != "OPEN":
         return {"ok": False, "error": "Turno cerrado"}, 400
 
-    payload = request.get_json(silent=True) or {}
-    hour_shift = (payload.get("hour_shift") or "MORNING").strip().upper()
-    if hour_shift not in DELIVERY_SHIFT_PRESETS:
-        hour_shift = "MORNING"
-
-    hour_in = (payload.get("hour_in") or "").strip()
-    hour_out = (payload.get("hour_out") or "").strip()
-    if hour_in and not valid_time_str(hour_in):
-        return {"ok": False, "error": "Hora de entrada invalida"}, 400
-    if hour_out and not valid_time_str(hour_out):
-        return {"ok": False, "error": "Hora de salida invalida"}, 400
-
-    rates = payload.get("rates") if isinstance(payload.get("rates"), list) else [1500, 2000, 2500, 3000, 2500]
-    qtys = payload.get("qtys") if isinstance(payload.get("qtys"), list) else [0, 0, 0, 0, 0]
-    rates = (rates + [0, 0, 0, 0, 0])[:5]
-    qtys = (qtys + [0, 0, 0, 0, 0])[:5]
-
-    safe_rates = []
-    for v in rates:
-        try:
-            safe_rates.append(int(float(v or 0)))
-        except Exception:
-            safe_rates.append(0)
-
-    hours_qty = delivery_hours_decimal(hour_in, hour_out)
-    safe_qtys = []
-    for i, v in enumerate(qtys):
-        if i == 4:
-            safe_qtys.append(hours_qty)
-        else:
-            try:
-                safe_qtys.append(int(float(v or 0)))
-            except Exception:
-                safe_qtys.append(0)
-
     try:
-        consume_amount = int(float(payload.get("consume_amount") or 0))
-    except Exception:
-        consume_amount = 0
-    consume_note = str(payload.get("consume_note") or "")[:200]
+        payload = request.get_json(silent=True) or {}
+        clean_payload = sanitize_delivery_payload(payload)
 
-    clean_payload = {
-        "rates": safe_rates,
-        "qtys": safe_qtys,
-        "consume_amount": consume_amount,
-        "consume_note": consume_note,
-        "hour_shift": hour_shift,
-        "hour_in": hour_in,
-        "hour_out": hour_out,
-    }
+        s.hour_shift = clean_payload["hour_shift"]
+        s.hour_in = clean_payload["hour_in"] or None
+        s.hour_out = clean_payload["hour_out"] or None
+        s.delivery_data_json = json.dumps(clean_payload, ensure_ascii=False)
 
-    s.hour_shift = hour_shift
-    s.hour_in = hour_in or None
-    s.hour_out = hour_out or None
-    s.delivery_data_json = json.dumps(clean_payload, ensure_ascii=False)
-    db.session.commit()
-    backup_caja_local_y_drive()
-    return {"ok": True, "hours": safe_qtys[4]}
+        db.session.commit()
+        backup_caja_local_y_drive()
+        return {"ok": True, "hours": clean_payload["qtys"][4]}
+    except ValueError as ex:
+        return {"ok": False, "error": str(ex)}, 400
 
 @app.route("/caja/shift/<int:id>/sales", methods=["POST"])
 @login_required
