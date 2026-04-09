@@ -109,8 +109,27 @@ def get_caja_summary(
     for s, c in q:
         exp = expenses_total(s.id, CashExpense)
         cash_final = int(c.ending_cash or 0)
-        bruto = calc_ingreso_bruto(s, exp, cash_final=cash_final)
-        neto = calc_ingreso_neto(s, egresos=exp, cash_final=cash_final)
+
+        bruto = calc_ingreso_bruto(
+            s,
+            exp,
+            ShiftClose,
+            cash_final=cash_final,
+        )
+
+        neto = calc_ingreso_neto(
+            s,
+            ShiftClose,
+            CashExpense,
+            egresos=exp,
+            cash_final=cash_final,
+        )
+
+        sales_cash_bruto = cash_bruto(
+            s,
+            ShiftClose,
+            cash_final=cash_final,
+        )
 
         rows.append({
             "day": s.day.isoformat(),
@@ -121,7 +140,7 @@ def get_caja_summary(
             "opening_cash": int(s.opening_cash or 0),
             "retirado": int(s.sales_cash or 0),
             "cash_final": cash_final,
-            "sales_cash": int(cash_bruto(s, cash_final=cash_final)),
+            "sales_cash": int(sales_cash_bruto),
             "sales_mp": int(s.sales_mp or 0),
             "sales_pya": int(getattr(s, "sales_pya", 0) or 0),
             "sales_rappi": int(getattr(s, "sales_rappi", 0) or 0),

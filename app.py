@@ -3330,7 +3330,7 @@ def caja_index():
         if s.status == "CLOSED":
             c = closes.get(s.id)
             cash_final = int(getattr(c, 'ending_cash', 0) or 0) if c else 0
-            eg = expenses_total(s.id, CashExpense)
+            eg = expenses_total(s.id)
             ventas_netas_map[s.id] = int(calc_ingreso_neto(s, egresos=eg, cash_final=cash_final))
             c = closes.get(s.id)
             efectivo_disp_map[s.id] = int(s.sales_cash or 0)
@@ -3477,7 +3477,7 @@ def shift(id):
     expenses = CashExpense.query.filter_by(shift_id=id).order_by(CashExpense.created_at.asc()).all()
     close_row = ShiftClose.query.filter_by(shift_id=id).first()
 
-    egresos_total = expenses_total(id, CashExpense)
+    egresos_total = expenses_total(id)
     cash_final = int(getattr(close_row, 'ending_cash', 0) or 0) if close_row else 0
     ingreso_bruto = calc_ingreso_bruto(s, egresos_total, cash_final=cash_final)
     ingreso_neto = calc_ingreso_neto(s, egresos=egresos_total, cash_final=cash_final)
@@ -3786,29 +3786,16 @@ def edit_all(id):
 @app.route("/caja/export/excel")
 @login_required
 def export_excel():
-    data = get_caja_summary(
-        db,
-        Shift,
-        ShiftClose,
-        CashExpense,
-        limit=10000,
-        weekday_es=weekday_es,
-        responsible_name=responsible_name,
-        turn_names=TURN_NAMES,
-        expenses_total=expenses_total,
-        calc_ingreso_bruto=calc_ingreso_bruto,
-        calc_ingreso_neto=calc_ingreso_neto,
-        cash_bruto=cash_bruto,
-    )
+    data = get_caja_summary(limit=10000)
 
     wb = Workbook()
     ws = wb.active
     ws.title = "Cierres"
 
     ws.append([
-        "Fecha","Turno","Responsable",
-        "Caja Inicial","Efectivo bruto","Ventas Mercado Pago","Ventas Pedidos Ya","Ventas Rappi",
-        "Egresos","Ventas Totales","Ventas Netas","Retirado","Caja Final (Real)","Diferencia"
+        "Fecha", "Turno", "Responsable",
+        "Caja Inicial", "Efectivo bruto", "Ventas Mercado Pago", "Ventas Pedidos Ya", "Ventas Rappi",
+        "Egresos", "Ventas Totales", "Ventas Netas", "Retirado", "Caja Final (Real)", "Diferencia"
     ])
 
     for r in data:
@@ -3833,6 +3820,7 @@ def export_excel():
 @app.route("/caja/export/json")
 @login_required
 def export_caja_json():
+
     # Backup JSON de Caja: shifts + expenses + close
     start_raw = request.args.get("start")
     end_raw = request.args.get("end")
