@@ -9,18 +9,6 @@ from datetime import date, datetime, timedelta, UTC
 from typing import Optional, Tuple
 
 from services.backup_service import perform_backup
-from services.delivery_service import (
-    DELIVERY_SHIFT_PRESETS,
-    build_delivery_payload,
-    sanitize_delivery_payload,
-)
-from services.caja_service import (
-    calc_ending_calc,
-    calc_ingreso_bruto,
-    calc_ingreso_neto,
-    cash_bruto,
-    expenses_total,
-)
 
 from flask import (
     Flask, request, redirect, url_for, render_template_string,
@@ -727,6 +715,59 @@ def diff_minutes(t_in: str, t_out: str):
         return None
     return mo - mi
 
+DELIVERY_SHIFT_PRESETS = {
+    "MORNING": {"hour_in": "08:55", "hour_out": "12:50"},
+    "AFTERNOON": {"hour_in": "16:55", "hour_out": "20:50"},
+}
+
+def delivery_hours_decimal(hour_in: Optional[str], hour_out: Optional[str]) -> float:
+    mins = diff_minutes(hour_in or "", hour_out or "")
+    if mins is None or mins < 0:
+        return 0.0
+    return round(mins / 60.0, 2)
+
+
+def build_delivery_payload(shift_row: Shift) -> dict:
+    payload = {
+        "rates": [1500, 2000, 2500, 3000, 2500],
+        "qtys": [0, 0, 0, 0, 0],
+        "consume_amount": 0,
+        "consume_note": "",
+        "hour_shift": shift_row.hour_shift or "MORNING",
+        "hour_in": shift_row.hour_in or DELIVERY_SHIFT_PRESETS["MORNING"]["hour_in"],
+        "hour_out": shift_row.hour_out or DELIVERY_SHIFT_PRESETS["MORNING"]["hour_out"],
+    }
+    if shift_row.delivery_data_json:
+        try:
+            raw = json.loads(shift_row.delivery_data_json)
+            if isinstance(raw, dict):
+                payload.update(raw)
+        except Exception:
+            pass
+
+    hour_shift = (payload.get("hour_shift") or shift_row.hour_shift or "MORNING").strip().upper()
+    if hour_shift not in DELIVERY_SHIFT_PRESETS:
+        hour_shift = "MORNING"
+    payload["hour_shift"] = hour_shift
+
+    payload["hour_in"] = (payload.get("hour_in") or shift_row.hour_in or DELIVERY_SHIFT_PRESETS[hour_shift]["hour_in"])
+    payload["hour_out"] = (payload.get("hour_out") or shift_row.hour_out or DELIVERY_SHIFT_PRESETS[hour_shift]["hour_out"])
+
+    rates = payload.get("rates") if isinstance(payload.get("rates"), list) else None
+    if not rates or len(rates) != 5:
+        payload["rates"] = [1500, 2000, 2500, 3000, 2500]
+    qtys = payload.get("qtys") if isinstance(payload.get("qtys"), list) else None
+    if not qtys or len(qtys) != 5:
+        payload["qtys"] = [0, 0, 0, 0, 0]
+
+    try:
+        payload["consume_amount"] = int(float(payload.get("consume_amount") or 0))
+    except Exception:
+        payload["consume_amount"] = 0
+    payload["consume_note"] = str(payload.get("consume_note") or "")
+    payload["qtys"][4] = delivery_hours_decimal(payload["hour_in"], payload["hour_out"])
+    return payload
+
 def fmt_minutes(m):
     if m is None:
         return "-"
@@ -817,6 +858,68 @@ def extract_consumptions_and_clean_notes(notes: str, max_items: int = 5):
 
     notes_clean = " / ".join(cleaned_parts).strip()
     return cons, (notes_clean if notes_clean else None)
+
+# ==============================
+# CAJA UTILS
+# ==============================
+def expenses_total(shift_id: int) -> int:
+    return sum(e.amount for e in CashExpense.query.filter_by(shift_id=shift_id).all())
+
+
+def cash_final_value(s: Shift) -> int:
+    """Caja final (efectivo que queda en la caja) guardada en el cierre.
+    - Para turnos OPEN (aun sin cierre), devuelve 0.
+    """
+    try:
+        sid = getattr(s, "id", None)
+        if not sid:
+            return 0
+        c = ShiftClose.query.filter_by(shift_id=sid).first()
+        return int(c.ending_cash or 0) if c else 0
+    except Exception:
+        return 0
+
+def cash_bruto(s: Shift, cash_final: Optional[int] = None) -> int:
+    """Efectivo bruto = Retirado (efectivo total) + Caja final."""
+    retirado = int(s.sales_cash or 0)
+    if cash_final is None:
+        cash_final = cash_final_value(s)
+    return retirado + int(cash_final or 0)
+
+def cash_neto(s: Shift) -> int:
+    """Efectivo neto = Retirado - Caja inicial.
+    Nota: puede ser negativo si Retirado < Caja inicial (ej: faltante / error de carga).
+    """
+    return int(s.sales_cash or 0) - int(s.opening_cash or 0)
+
+def calc_ingreso_bruto(s: Shift, egresos: int, cash_final: Optional[int] = None) -> int:
+    """Ingreso total (bruto) =
+       (Efectivo bruto + MP + PedidosYa + Rappi) + Egresos
+       donde Efectivo bruto = Retirado + Caja final.
+    """
+    return (
+        cash_bruto(s, cash_final=cash_final) +
+        int(s.sales_mp or 0) +
+        int(getattr(s, "sales_pya", 0) or 0) +
+        int(getattr(s, "sales_rappi", 0) or 0) +
+        int(egresos or 0)
+    )
+
+def calc_ingreso_neto(s: Shift, egresos: Optional[int] = None, cash_final: Optional[int] = None) -> int:
+    """Ingreso neto = Ingreso total (bruto) - Egresos total."""
+    if egresos is None:
+        try:
+            egresos = expenses_total(int(s.id))
+        except Exception:
+            egresos = 0
+    return calc_ingreso_bruto(s, int(egresos or 0), cash_final=cash_final) - int(egresos or 0)
+
+def calc_ending_calc(cash_final: int, withdrawn: int) -> int:
+    """Compatibilidad legacy.
+    Antes: caja final teorica = efectivo bruto - retirado.
+    Ahora: la Caja final se carga manualmente, por lo que la 'teorica' coincide con la real.
+    """
+    return int(cash_final or 0)
 
 
 def prev_turn_of(day_obj: date, turn_code: str):
@@ -2087,10 +2190,10 @@ def get_caja_summary(limit=200, start: Optional[date]=None, end: Optional[date]=
     q = q.order_by(Shift.day.desc(), Shift.turn.asc()).limit(limit).all()
 
     for s, c in q:
-        exp = expenses_total(s.id, CashExpense)
+        exp = expenses_total(s.id)
         cash_final = int(c.ending_cash or 0)
-        bruto = calc_ingreso_bruto(s, exp, ShiftClose, cash_final=cash_final)
-        neto = calc_ingreso_neto(s, ShiftClose, CashExpense, egresos=exp, cash_final=cash_final)
+        bruto = calc_ingreso_bruto(s, exp, cash_final=cash_final)
+        neto = calc_ingreso_neto(s, egresos=exp, cash_final=cash_final)
 
         rows.append({
             "day": s.day.isoformat(),
@@ -2101,7 +2204,7 @@ def get_caja_summary(limit=200, start: Optional[date]=None, end: Optional[date]=
             "opening_cash": int(s.opening_cash or 0),
             "retirado": int(s.sales_cash or 0),
             "cash_final": cash_final,
-            "sales_cash": int(cash_bruto(s, ShiftClose, cash_final=cash_final)),
+            "sales_cash": int(cash_bruto(s, cash_final=cash_final)),
             "sales_mp": int(s.sales_mp or 0),
             "sales_pya": int(getattr(s, "sales_pya", 0) or 0),
             "sales_rappi": int(getattr(s, "sales_rappi", 0) or 0),
@@ -3227,8 +3330,8 @@ def caja_index():
         if s.status == "CLOSED":
             c = closes.get(s.id)
             cash_final = int(getattr(c, 'ending_cash', 0) or 0) if c else 0
-            eg = expenses_total(s.id)
-            ventas_netas_map[s.id] = int(calc_ingreso_neto(s, ShiftClose, CashExpense, egresos=eg, cash_final=cash_final))
+            eg = expenses_total(s.id, CashExpense)
+            ventas_netas_map[s.id] = int(calc_ingreso_neto(s, egresos=eg, cash_final=cash_final))
             c = closes.get(s.id)
             efectivo_disp_map[s.id] = int(s.sales_cash or 0)
 
@@ -3376,20 +3479,15 @@ def shift(id):
 
     egresos_total = expenses_total(id, CashExpense)
     cash_final = int(getattr(close_row, 'ending_cash', 0) or 0) if close_row else 0
-    ingreso_bruto = calc_ingreso_bruto(s, egresos_total, ShiftClose, cash_final=cash_final)
-    ingreso_neto = calc_ingreso_neto(s, ShiftClose, CashExpense, egresos=egresos_total, cash_final=cash_final)
+    ingreso_bruto = calc_ingreso_bruto(s, egresos_total, cash_final=cash_final)
+    ingreso_neto = calc_ingreso_neto(s, egresos=egresos_total, cash_final=cash_final)
 
     efectivo_disponible = int(s.sales_cash or 0)
 
     u = current_user()
     can_edit = bool(close_row) and can_edit_close(u, close_row)
 
-    delivery_payload = build_delivery_payload(
-        delivery_data_json=s.delivery_data_json,
-        hour_shift=s.hour_shift,
-        hour_in=s.hour_in,
-        hour_out=s.hour_out,
-    )
+    delivery_payload = build_delivery_payload(s)
 
     return render_template_string(
         SHIFT_HTML,
@@ -3416,20 +3514,64 @@ def save_delivery_draft(id):
     if s.status != "OPEN":
         return {"ok": False, "error": "Turno cerrado"}, 400
 
+    payload = request.get_json(silent=True) or {}
+    hour_shift = (payload.get("hour_shift") or "MORNING").strip().upper()
+    if hour_shift not in DELIVERY_SHIFT_PRESETS:
+        hour_shift = "MORNING"
+
+    hour_in = (payload.get("hour_in") or "").strip()
+    hour_out = (payload.get("hour_out") or "").strip()
+    if hour_in and not valid_time_str(hour_in):
+        return {"ok": False, "error": "Hora de entrada invalida"}, 400
+    if hour_out and not valid_time_str(hour_out):
+        return {"ok": False, "error": "Hora de salida invalida"}, 400
+
+    rates = payload.get("rates") if isinstance(payload.get("rates"), list) else [1500, 2000, 2500, 3000, 2500]
+    qtys = payload.get("qtys") if isinstance(payload.get("qtys"), list) else [0, 0, 0, 0, 0]
+    rates = (rates + [0, 0, 0, 0, 0])[:5]
+    qtys = (qtys + [0, 0, 0, 0, 0])[:5]
+
+    safe_rates = []
+    for v in rates:
+        try:
+            safe_rates.append(int(float(v or 0)))
+        except Exception:
+            safe_rates.append(0)
+
+    hours_qty = delivery_hours_decimal(hour_in, hour_out)
+    safe_qtys = []
+    for i, v in enumerate(qtys):
+        if i == 4:
+            safe_qtys.append(hours_qty)
+        else:
+            try:
+                safe_qtys.append(int(float(v or 0)))
+            except Exception:
+                safe_qtys.append(0)
+
     try:
-        payload = request.get_json(silent=True) or {}
-        clean_payload = sanitize_delivery_payload(payload)
+        consume_amount = int(float(payload.get("consume_amount") or 0))
+    except Exception:
+        consume_amount = 0
+    consume_note = str(payload.get("consume_note") or "")[:200]
 
-        s.hour_shift = clean_payload["hour_shift"]
-        s.hour_in = clean_payload["hour_in"] or None
-        s.hour_out = clean_payload["hour_out"] or None
-        s.delivery_data_json = json.dumps(clean_payload, ensure_ascii=False)
+    clean_payload = {
+        "rates": safe_rates,
+        "qtys": safe_qtys,
+        "consume_amount": consume_amount,
+        "consume_note": consume_note,
+        "hour_shift": hour_shift,
+        "hour_in": hour_in,
+        "hour_out": hour_out,
+    }
 
-        db.session.commit()
-        backup_caja_local_y_drive()
-        return {"ok": True, "hours": clean_payload["qtys"][4]}
-    except ValueError as ex:
-        return {"ok": False, "error": str(ex)}, 400
+    s.hour_shift = hour_shift
+    s.hour_in = hour_in or None
+    s.hour_out = hour_out or None
+    s.delivery_data_json = json.dumps(clean_payload, ensure_ascii=False)
+    db.session.commit()
+    backup_caja_local_y_drive()
+    return {"ok": True, "hours": safe_qtys[4]}
 
 @app.route("/caja/shift/<int:id>/sales", methods=["POST"])
 @login_required
@@ -3644,7 +3786,21 @@ def edit_all(id):
 @app.route("/caja/export/excel")
 @login_required
 def export_excel():
-    data = get_caja_summary(limit=10000)
+    data = get_caja_summary(
+        db,
+        Shift,
+        ShiftClose,
+        CashExpense,
+        limit=10000,
+        weekday_es=weekday_es,
+        responsible_name=responsible_name,
+        turn_names=TURN_NAMES,
+        expenses_total=expenses_total,
+        calc_ingreso_bruto=calc_ingreso_bruto,
+        calc_ingreso_neto=calc_ingreso_neto,
+        cash_bruto=cash_bruto,
+    )
+
     wb = Workbook()
     ws = wb.active
     ws.title = "Cierres"
@@ -3667,9 +3823,13 @@ def export_excel():
     wb.save(bio)
     bio.seek(0)
     filename = f"cierres_caja_{date.today().isoformat()}.xlsx"
-    return send_file(bio, as_attachment=True, download_name=filename,
-                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                     
+    return send_file(
+        bio,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
 @app.route("/caja/export/json")
 @login_required
 def export_caja_json():
@@ -3706,7 +3866,7 @@ def export_caja_json():
             "opening_cash": int(s.opening_cash or 0),
             "retirado": int(s.sales_cash or 0),
             "cash_final": cash_final,
-            "sales_cash": int(cash_bruto(s, ShiftClose, cash_final=cash_final)),
+            "sales_cash": int(cash_bruto(s, cash_final=cash_final)),
             "sales_mp": int(s.sales_mp or 0),
             "sales_pya": int(getattr(s, "sales_pya", 0) or 0),
             "sales_rappi": int(getattr(s, "sales_rappi", 0) or 0),
