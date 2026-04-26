@@ -1501,6 +1501,9 @@ HOME_HTML = """
 <head>
   <meta charset="utf-8">
   <title>PORA - Panel</title>
+  <link rel="manifest" href="/static/manifest.json">
+  <meta name="theme-color" content="#000000">
+  <link rel="icon" href="/static/icon-192.png">
   """ + BASE_CSS + """
   <style>
     body{max-width:980px;}
