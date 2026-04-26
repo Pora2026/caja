@@ -458,7 +458,7 @@ def seed_users():
             if name not in existing:
                 db.session.add(User(username=name, role="admin"))
         db.session.commit()
-        backup_caja_local_y_drive()
+        #backup_caja_local_y_drive()
     except IntegrityError:
         db.session.rollback()
 
@@ -478,10 +478,11 @@ def init_db():
             ensure_columns_attendance()
         seed_users()
         
-        backup_caja_local_y_drive()
+        #backup_caja_local_y_drive()
 
 # Ejecutar init al levantar (Render / gunicorn y local)
-init_db()
+if __name__ == "__main__":
+    init_db()
 
 # ==============================
 # AUTH
