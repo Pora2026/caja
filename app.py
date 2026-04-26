@@ -3044,7 +3044,7 @@ SHIFT_HTML = """
       });
     }
 
-    function loadDraft(){
+    function loadDraft(){u8
       try{
         const raw = localStorage.getItem("caja_draft_"+sid);
         if(!raw) return;
@@ -3787,15 +3787,14 @@ def edit_all(id):
 @login_required
 def export_excel():
     data = get_caja_summary(limit=10000)
-
     wb = Workbook()
     ws = wb.active
     ws.title = "Cierres"
 
     ws.append([
-        "Fecha", "Turno", "Responsable",
-        "Caja Inicial", "Efectivo bruto", "Ventas Mercado Pago", "Ventas Pedidos Ya", "Ventas Rappi",
-        "Egresos", "Ventas Totales", "Ventas Netas", "Retirado", "Caja Final (Real)", "Diferencia"
+        "Fecha","Turno","Responsable",
+        "Caja Inicial","Efectivo bruto","Ventas Mercado Pago","Ventas Pedidos Ya","Ventas Rappi",
+        "Egresos","Ventas Totales","Ventas Netas","Retirado","Caja Final (Real)","Diferencia"
     ])
 
     for r in data:
@@ -3810,17 +3809,12 @@ def export_excel():
     wb.save(bio)
     bio.seek(0)
     filename = f"cierres_caja_{date.today().isoformat()}.xlsx"
-    return send_file(
-        bio,
-        as_attachment=True,
-        download_name=filename,
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
+    return send_file(bio, as_attachment=True, download_name=filename,
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                     
 @app.route("/caja/export/json")
 @login_required
 def export_caja_json():
-
     # Backup JSON de Caja: shifts + expenses + close
     start_raw = request.args.get("start")
     end_raw = request.args.get("end")
@@ -5582,3 +5576,4 @@ if __name__ == "__main__":
     # En Render esto NO corre (porque Render usa gunicorn).
     port = int(os.getenv("PORT", "5050"))
     app.run(host="127.0.0.1", port=port, debug=False)
+    

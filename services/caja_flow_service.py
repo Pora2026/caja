@@ -32,10 +32,8 @@ def get_locked_opening_cash(day_obj: date, turn_code: str, Shift, ShiftClose):
 
 
 def is_placeholder_shift(s, CashExpense, ShiftClose) -> bool:
-    """Turno cerrado en cero, sin egresos ni cierre real."""
     if not s:
         return True
-
     if (s.status or "").upper() != "CLOSED":
         return False
 
@@ -109,27 +107,9 @@ def get_caja_summary(
     for s, c in q:
         exp = expenses_total(s.id, CashExpense)
         cash_final = int(c.ending_cash or 0)
-
-        bruto = calc_ingreso_bruto(
-            s,
-            exp,
-            ShiftClose,
-            cash_final=cash_final,
-        )
-
-        neto = calc_ingreso_neto(
-            s,
-            ShiftClose,
-            CashExpense,
-            egresos=exp,
-            cash_final=cash_final,
-        )
-
-        sales_cash_bruto = cash_bruto(
-            s,
-            ShiftClose,
-            cash_final=cash_final,
-        )
+        bruto = calc_ingreso_bruto(s, exp, ShiftClose, cash_final=cash_final)
+        neto = calc_ingreso_neto(s, ShiftClose, CashExpense, egresos=exp, cash_final=cash_final)
+        sales_cash_bruto = cash_bruto(s, ShiftClose, cash_final=cash_final)
 
         rows.append({
             "day": s.day.isoformat(),

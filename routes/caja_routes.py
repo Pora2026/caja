@@ -12,6 +12,7 @@ from openpyxl import Workbook, load_workbook
 def register_caja_routes(
     app,
     *,
+    db,
     login_required,
     current_user,
     backup_caja_local_y_drive,
@@ -613,7 +614,7 @@ def register_caja_routes(
         function fmtMoney(n){
           try{ n = parseInt(n,10); }catch(e){ n = 0; }
           if(isNaN(n)) n = 0;
-          const s = n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+          const s = n.toString().replace(/\\B(?=(\\d{3})+(?!\\d))/g, ".");
           return "$ " + s;
         }
 
@@ -1613,10 +1614,6 @@ def register_caja_routes(
     @login_required
     def export_excel():
         data = get_caja_summary(
-            db,
-            Shift,
-            ShiftClose,
-            CashExpense,
             limit=10000,
             weekday_es=weekday_es,
             responsible_name=responsible_name,
