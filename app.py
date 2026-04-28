@@ -3048,7 +3048,7 @@ SHIFT_HTML = """
       });
     }
 
-    function loadDraft(){u8
+    function loadDraft(){
       try{
         const raw = localStorage.getItem("caja_draft_"+sid);
         if(!raw) return;
@@ -3296,6 +3296,7 @@ def is_placeholder_shift(s: "Shift") -> bool:
 
 @app.route("/caja")
 @login_required
+@admin_required
 def caja_index():
     day_obj, d = parse_day_param(request.args.get("d"))
 

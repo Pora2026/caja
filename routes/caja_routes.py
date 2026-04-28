@@ -377,7 +377,7 @@ def register_caja_routes(
       <div class="row" style="align-items:flex-start;">
         <div style="min-width:280px;">
           <label><b>Retirado (Efectivo total)</b></label><br>
-          <input type="number" name="sales_cash" min="0" value="{{s.sales_cash}}" {{'disabled' if s.status=='CLOSED' else ''}} id="retirado_input">
+          <input type="number" min="0" value="{{s.sales_cash}}" {{'disabled' if s.status=='CLOSED' else ''}} id="retirado_input">
           <div class="muted" style="margin-top:6px;">
             Efectivo bruto (auto): <b id="ef_bruto_lbl">{{ (s.sales_cash + (close.ending_cash if close else 0))|money }}</b><br>
             Efectivo neto (auto): <b id="ef_neto_lbl">{{ (s.sales_cash - s.opening_cash)|money }}</b>
@@ -386,7 +386,7 @@ def register_caja_routes(
 
         <div style="min-width:320px;">
           <label><b>Caja final (efectivo que queda en la caja)</b></label><br>
-          <input type="number" name="cash_final" min="0" value="{{ (close.ending_cash if close else 0) }}" {{'disabled' if s.status=='CLOSED' else ''}} id="caja_final_input">
+          <input type="number" min="0" value="{{ (close.ending_cash if close else 0) }}" {{'disabled' if s.status=='CLOSED' else ''}} id="caja_final_input">
           <div class="muted" style="margin-top:6px;">
             (Se carga manualmente)
           </div>
@@ -404,7 +404,7 @@ def register_caja_routes(
         </div>
         <div>
           Ventas Rappi:<br>
-          <input type="number" name="sales_rappi" min="0" value="{{s.sales_rappi}}" {{'disabled' if s.status=='CLOSED' else ''}} id="rappi_input">
+          <input type="number" min="0" value="{{s.sales_rappi}}" {{'disabled' if s.status=='CLOSED' else ''}} id="rappi_input">
         </div>
       </div>
     </div>
@@ -571,13 +571,13 @@ def register_caja_routes(
         </div>
       </div>
     {% else %}
-      <form method="post" action="{{ url_for('close_shift', id=s.id, d=d) }}" style="margin-top:14px;" id="saveForm">
+      <form method="post" action="{{ url_for('close_shift', id=s.id, d=d) }}" style="margin-top:14px;" id="saveForm" onsubmit="return prepareSaveForm();">
         <input type="hidden" name="sales_cash" id="h_sales_cash">
         <input type="hidden" name="cash_final" id="h_cash_final">
         <input type="hidden" name="sales_mp" id="h_sales_mp">
         <input type="hidden" name="sales_pya" id="h_sales_pya">
         <input type="hidden" name="sales_rappi" id="h_sales_rappi">
-        <button class="btn" style="margin-top:10px;">Guardar registro</button>
+        <button type="submit" class="btn" style="margin-top:10px;">Guardar registro</button>
       </form>
 
       <script>
@@ -916,16 +916,16 @@ def register_caja_routes(
         recalcDeliveryCalc();
         loadDraft();
         recalc();
-
-        // Submit: enviar valores actuales
-        document.getElementById("saveForm").addEventListener("submit", (e) => {
+        
+        function prepareSaveForm(){
           document.getElementById("h_sales_cash").value = toInt(retiradoEl.value);
           document.getElementById("h_cash_final").value = toInt(cajaFinalEl.value);
           document.getElementById("h_sales_mp").value = toInt(mpEl.value);
           document.getElementById("h_sales_pya").value = toInt(pyaEl.value);
           document.getElementById("h_sales_rappi").value = toInt(rappiEl.value);
-          // no borramos draft: por si vuelve atras
-        });
+          try{ localStorage.removeItem("caja_draft_"+sid); }catch(e){}
+          return true;
+        }
       </script>
 
     {% endif %}
@@ -1333,6 +1333,28 @@ def register_caja_routes(
             delivery_payload_json=json.dumps(delivery_payload),
             delivery_shift_presets_json=json.dumps(DELIVERY_SHIFT_PRESETS)
         )
+
+    def valid_time_str(value: str) -> bool:
+        value = (value or "").strip()
+        if not re.fullmatch(r"\d{2}:\d{2}", value):
+            return False
+        hh, mm = value.split(":")
+        try:
+            h = int(hh)
+            m = int(mm)
+        except Exception:
+            return False
+        return 0 <= h <= 23 and 0 <= m <= 59
+
+    def delivery_hours_decimal(hour_in: str, hour_out: str) -> float:
+        if not valid_time_str(hour_in) or not valid_time_str(hour_out):
+            return 0.0
+        ih, im = [int(x) for x in hour_in.split(":")]
+        oh, om = [int(x) for x in hour_out.split(":")]
+        minutes = (oh * 60 + om) - (ih * 60 + im)
+        if minutes <= 0:
+            return 0.0
+        return round(minutes / 60.0, 2)
 
     @app.route("/caja/shift/<int:id>/delivery_draft", methods=["POST"])
     @login_required
