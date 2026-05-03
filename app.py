@@ -1616,6 +1616,7 @@ ADMIN_PIN_HTML = """
         </td>
       </tr>
     {% endfor %}
+    
   </table>
 </body>
 </html>
@@ -1624,7 +1625,7 @@ ADMIN_PIN_HTML = """
 
 @app.route("/admin/pin_mobile", methods=["GET","POST"])
 @login_required
-@admin_required
+@login_required
 def admin_pin_mobile():
     err = None
     msg = None
@@ -3296,7 +3297,6 @@ def is_placeholder_shift(s: "Shift") -> bool:
 
 @app.route("/caja")
 @login_required
-@admin_required
 def caja_index():
     day_obj, d = parse_day_param(request.args.get("d"))
 
